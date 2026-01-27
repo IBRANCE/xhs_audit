@@ -1,0 +1,67 @@
+### 小红书审核系统 API测试
+### 使用IntelliJ IDEA的HTTP Client进行测试
+
+### 1. 健康检查
+GET http://localhost:8080/actuator/health
+Accept: application/json
+
+### 2. 单条内容审核
+POST http://localhost:8080/api/v1/audit/content
+Content-Type: application/json
+
+{
+  "url": "https://www.xiaohongshu.com/explore/test123",
+  "forceRefresh": false
+}
+
+### 3. 批量审核
+POST http://localhost:8080/api/v1/audit/batch
+Content-Type: application/json
+
+{
+  "links": [
+    "https://www.xiaohongshu.com/explore/1",
+    "https://www.xiaohongshu.com/explore/2",
+    "https://www.xiaohongshu.com/explore/3"
+  ]
+}
+
+### 4. 上传Excel文件
+POST http://localhost:8080/api/v1/audit/upload
+Content-Type: multipart/form-data; boundary=WebAppBoundary
+
+--WebAppBoundary
+Content-Disposition: form-data; name="file"; filename="test-posts.xlsx"
+Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+
+< ./test-posts.xlsx
+--WebAppBoundary--
+
+### 5. 查询任务状态
+# 替换 {jobId} 为实际的任务ID
+GET http://localhost:8080/api/v1/audit/job/{{jobId}}
+Accept: application/json
+
+### 6. 查询审核结果
+# 替换 {postId} 为实际的帖子ID
+GET http://localhost:8080/api/v1/audit/result/{{postId}}
+Accept: application/json
+
+### 7. 下载审核结果
+# 替换 {jobId} 为实际的任务ID
+GET http://localhost:8080/api/v1/audit/download/{{jobId}}?format=xlsx
+Accept: application/octet-stream
+
+### 8. 获取API文档 (JSON)
+GET http://localhost:8080/api-docs
+Accept: application/json
+
+### 9. 获取Actuator信息
+GET http://localhost:8080/actuator/info
+Accept: application/json
+
+### 10. 获取应用指标
+GET http://localhost:8080/actuator/metrics
+Accept: application/json
+
+###

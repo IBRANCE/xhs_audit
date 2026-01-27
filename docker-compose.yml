@@ -1,0 +1,73 @@
+services:
+  # PostgreSQL 数据库
+  postgres:
+    image: postgres:15-alpine
+    container_name: xhs-audit-postgres
+    environment:
+      POSTGRES_DB: xhs_audit
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      TZ: Asia/Shanghai
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - xhs-audit-network
+
+  # Redis 缓存
+  redis:
+    image: redis:7-alpine
+    container_name: xhs-audit-redis
+    command: redis-server --appendonly yes --appendfsync everysec
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - xhs-audit-network
+
+  # PgAdmin (PostgreSQL管理工具 - 可选)
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: xhs-audit-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
+    networks:
+      - xhs-audit-network
+
+  # Redis Commander (Redis管理工具 - 可选)
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: xhs-audit-redis-commander
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+    ports:
+      - "8081:8081"
+    depends_on:
+      - redis
+    networks:
+      - xhs-audit-network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  xhs-audit-network:
+    driver: bridge

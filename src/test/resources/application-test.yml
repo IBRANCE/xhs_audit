@@ -1,0 +1,54 @@
+# Test Profile Configuration
+spring:
+  application:
+    name: xhs-audit-test
+  
+  datasource:
+    url: jdbc:h2:mem:testdb
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: 
+  
+  jpa:
+    database-platform: org.hibernate.dialect.H2Dialect
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: false
+        dialect: org.hibernate.dialect.H2Dialect
+        storage_engine: innodb
+  
+  # Disable Flyway for tests (uses H2 which doesn't support PostgreSQL JSONB type)
+  flyway:
+    enabled: false
+  
+  # Redis disabled for testing
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      timeout: 2000ms
+      # Use embedded Redis or disable for tests
+  
+  cache:
+    type: none
+  
+  ai:
+    openai:
+      api-key: ${OPENAI_API_KEY:sk-test-mock-key}
+      model: gpt-4
+      base-url: https://api.openai.com
+  
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 50MB
+
+logging:
+  level:
+    root: INFO
+    com.xhs.audit: DEBUG
+    org.springframework: WARN
+    org.hibernate: WARN
