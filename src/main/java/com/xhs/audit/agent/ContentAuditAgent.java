@@ -3,19 +3,13 @@ package com.xhs.audit.agent;
 import java.time.LocalDateTime;
 import java.util.List;
 
-import org.springframework.ai.chat.ChatResponse;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.UserMessage;
-import org.springframework.ai.chat.prompt.Prompt;
-import org.springframework.ai.openai.OpenAiChatClient;
-import org.springframework.ai.openai.OpenAiChatOptions;
+import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
-
 import com.xhs.audit.model.dto.AuditDecision;
 import com.xhs.audit.model.entity.XhsContent;
 
@@ -40,16 +34,20 @@ import lombok.extern.slf4j.Slf4j;
 @Component
 public class ContentAuditAgent {
 
-    private final OpenAiChatClient chatClient;
+    private final ChatClient textChatClient;
+    private final ChatClient visionChatClient;
     private final ObjectMapper objectMapper;
 
     @Autowired
-    public ContentAuditAgent(OpenAiChatClient chatClient) {
-        this.chatClient = chatClient;
+    public ContentAuditAgent(
+            @org.springframework.beans.factory.annotation.Qualifier("textChatClient") ChatClient textChatClient,
+            @org.springframework.beans.factory.annotation.Qualifier("visionChatClient") ChatClient visionChatClient) {
+        this.textChatClient = textChatClient;
+        this.visionChatClient = visionChatClient;
         this.objectMapper = new ObjectMapper();
         this.objectMapper.registerModule(new JavaTimeModule());
 
-        log.info("ContentAuditAgent初始化完成，使用OpenAiChatClient");
+        log.info("ContentAuditAgent初始化完成，textChatClient和visionChatClient已注入");
     }
 
     /**
@@ -60,44 +58,75 @@ public class ContentAuditAgent {
      */
     public AuditDecision auditContent(XhsContent content) {
         try {
-            log.info("开始审核内容: postId={}, url={}", content.getPostId(), content.getUrl());
+            log.info("[Agent审核] 开始AI审核: postId={}, title={}", content.getPostId(), content.getTitle());
 
             // 1. 构建User Message
+            log.debug("[Agent审核] 构建System Prompt和User Message");
             String userMessageText = buildSystemPrompt() + "\n\n" + buildUserMessage(content);
-            Message userMessage = new UserMessage(userMessageText);
 
-            // 2. 配置OpenAI选项
-            OpenAiChatOptions options = OpenAiChatOptions.builder()
-                    .withModel("gpt-4")
-                    .withTemperature(0.3f)
-                    .withMaxTokens(2000)
-                    .build();
+            // 2. 调用文本模型进行审核（使用textChatClient）
+            log.info("[Agent审核] 调用文本模型进行内容审核");
+            log.debug("[Agent审核] textChatClient类型: {}", textChatClient.getClass().getName());
 
-            // 3. 调用LLM
-            Prompt prompt = new Prompt(List.of(userMessage), options);
-            ChatResponse response = chatClient.call(prompt);
-            String responseText = response.getResult().getOutput().getContent();
+            log.debug("[Agent审核] 开始调用LLM API...");
+            String responseText = null;
+            try {
+                // 使用新的ChatClient API
+                responseText = textChatClient.prompt()
+                        .user(userMessageText)
+                        .call()
+                        .content();
+                log.info("[Agent审核] LLM API调用成功");
+            } catch (Exception apiException) {
+                log.error("[Agent审核] LLM API调用失败", apiException);
+                log.error("[Agent审核] 错误详情: {}", apiException.getMessage());
+                if (apiException.getCause() != null) {
+                    log.error("[Agent审核] 错误原因: {}", apiException.getCause().getMessage());
+                }
+                throw apiException;
+            }
 
-            log.debug("LLM原始响应: {}", responseText);
+            log.debug("[Agent审核] LLM原始响应: {}", responseText);
 
             // 4. 解析JSON为AuditDecision对象
+            log.debug("[Agent审核] 解析LLM返回的JSON决策");
             AuditDecision decision = parseDecision(responseText);
 
             // 5. 补充元数据
             decision.setPostId(content.getPostId());
             decision.setUrl(content.getUrl());
             decision.setAuditedTime(LocalDateTime.now());
-            if (decision.getModelName() == null) {
-                decision.setModelName("gpt-4");
+
+            // 如果有图片，使用视觉模型审核图片内容
+            if (content.getImages() != null && !content.getImages().isEmpty()) {
+                log.info("[Agent审核] 检测到图片，使用视觉模型审核");
+                String imageAuditResult = auditImages(content);
+                if (imageAuditResult != null && !imageAuditResult.isEmpty()) {
+                    log.info("[Agent审核] 图片审核结果: {}", imageAuditResult);
+                    // 可以将图片审核结果添加到决策的理由中
+                    if (decision.getReasons() == null) {
+                        decision.setReasons(new java.util.ArrayList<>());
+                    }
+                    // 如果图片审核发现问题，可以在这里处理
+                }
             }
 
-            log.info("审核完成: postId={}, status={}, confidence={}",
-                    content.getPostId(), decision.getStatus(), decision.getConfidenceScore());
+            // 记录各维度审核结果
+            if (decision.getReasons() != null && !decision.getReasons().isEmpty()) {
+                for (AuditDecision.RejectReason reason : decision.getReasons()) {
+                    log.info("[Agent审核] 检测到问题: dimension={}, severity={}, reason={}",
+                            reason.getDimension(), reason.getSeverity(), reason.getReason());
+                }
+            }
+
+            log.info("[Agent审核完成] postId={}, status={}, confidence={}, riskLevel={}",
+                    content.getPostId(), decision.getStatus(), decision.getConfidenceScore(),
+                    decision.getRiskLevel());
 
             return decision;
 
         } catch (Exception e) {
-            log.error("审核失败: postId={}, error={}", content.getPostId(), e.getMessage(), e);
+            log.error("[Agent审核失败] postId={}, error={}", content.getPostId(), e.getMessage(), e);
             // 返回UNCERTAIN决策
             return AuditDecision.uncertain(content.getPostId(),
                     "审核异常: " + e.getMessage());
@@ -245,5 +274,50 @@ public class ContentAuditAgent {
         }
 
         return text.trim();
+    }
+
+    /**
+     * 使用视觉模型审核图片内容
+     * 
+     * @param content 包含图片的内容
+     * @return 图片审核结果描述
+     */
+    private String auditImages(XhsContent content) {
+        try {
+            if (content.getImages() == null || content.getImages().isEmpty()) {
+                return null;
+            }
+
+            log.info("[图片审核] 开始审核图片: postId={}, imageCount={}",
+                    content.getPostId(), content.getImages().size());
+
+            // 构建图片审核提示
+            StringBuilder promptBuilder = new StringBuilder();
+            promptBuilder.append("请审核以下小红书帖子的图片内容，检查是否存在违规内容：\n\n");
+            promptBuilder.append("【审核维度】\n");
+            promptBuilder.append("1. 色情低俗内容\n");
+            promptBuilder.append("2. 暴力血腥内容\n");
+            promptBuilder.append("3. 违法违规内容（毒品、赌博等）\n");
+            promptBuilder.append("4. 政治敏感内容\n");
+            promptBuilder.append("5. 虚假广告或诱导信息\n");
+            promptBuilder.append("6. 图片中的文字内容是否包含敏感词\n\n");
+            promptBuilder.append("【图片信息】\n");
+            promptBuilder.append("图片数量: ").append(content.getImages().size()).append("\n");
+            promptBuilder.append("图片URL: ").append(content.getImages()).append("\n\n");
+            promptBuilder.append("请返回审核结果，如果发现问题请详细说明。");
+
+            // 使用视觉模型（新API）
+            String result = visionChatClient.prompt()
+                    .user(promptBuilder.toString())
+                    .call()
+                    .content();
+
+            log.debug("[图片审核] 视觉模型返回: {}", result);
+            return result;
+
+        } catch (Exception e) {
+            log.error("[图片审核失败] postId={}, error={}", content.getPostId(), e.getMessage(), e);
+            return "图片审核异常: " + e.getMessage();
+        }
     }
 }

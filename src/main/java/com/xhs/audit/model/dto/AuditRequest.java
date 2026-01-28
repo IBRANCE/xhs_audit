@@ -21,7 +21,7 @@ public class AuditRequest {
      * 小红书链接（必填）
      */
     @NotBlank(message = "URL不能为空")
-    @Pattern(regexp = "^https?://(www\\.|m\\.)?xiaohongshu\\.com/explore/[a-zA-Z0-9_-]+.*|^https?://xhs\\.com/[a-zA-Z0-9_-]+.*", message = "URL格式不正确，必须是小红书链接")
+    @Pattern(regexp = "^https?://(www\\.|m\\.)?xiaohongshu\\.com/(explore|discovery/item)/[a-zA-Z0-9_-]+.*|^https?://xhs\\.com/[a-zA-Z0-9_-]+.*", message = "URL格式不正确，必须是小红书链接")
     private String url;
 
     /**

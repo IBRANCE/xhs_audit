@@ -9,13 +9,14 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import lombok.extern.slf4j.Slf4j;
 import com.xhs.audit.agent.ContentAuditAgent;
 import com.xhs.audit.exception.BusinessException;
 import com.xhs.audit.model.dto.AuditDecision;
 import com.xhs.audit.model.entity.AuditResult;
 import com.xhs.audit.model.entity.XhsContent;
 import com.xhs.audit.repository.AuditResultRepository;
+
+import lombok.extern.slf4j.Slf4j;
 
 /**
  * 审核业务服务
@@ -38,7 +39,7 @@ public class ContentAuditService {
     private AuditResultRepository auditResultRepository;
 
     private static final Pattern POST_ID_PATTERN = Pattern.compile(
-            "/explore/([a-zA-Z0-9_-]+)");
+            "/(explore|discovery/item)/([a-zA-Z0-9_-]+)");
 
     /**
      * 审核单条小红书内容（完整流程）
@@ -50,33 +51,54 @@ public class ContentAuditService {
     @Transactional
     public AuditDecision auditContent(String url, boolean forceRefresh) {
         try {
-            log.info("开始审核流程: url={}, forceRefresh={}", url, forceRefresh);
+            log.info("[审核流程] 开始: url={}, forceRefresh={}", url, forceRefresh);
 
             // 1. 提取postId
             String postId = extractPostId(url);
+            log.debug("[审核流程] 提取PostID: {}", postId);
 
             // 2. 检查是否已审核（非强制刷新时）
             if (!forceRefresh) {
+                log.debug("[审核流程] 检查审核结果缓存: postId={}", postId);
                 Optional<AuditResult> existingResult = auditResultRepository.findByPostId(postId);
                 if (existingResult.isPresent()) {
-                    log.info("使用缓存的审核结果: postId={}", postId);
+                    log.info("[审核流程] 命中审核结果缓存，跳过重复审核: postId={}", postId);
                     return convertToDecision(existingResult.get());
                 }
+                log.debug("[审核流程] 未命中审核结果缓存，继续处理");
             }
 
             // 3. 爬取内容
-            XhsContent content = crawlerService.crawlContent(url);
-            if (content == null) {
-                throw new BusinessException("ERR_CRAWL_FAILED", "内容爬取失败");
+            log.info("[审核流程] 调用爬虫服务获取内容: postId={}", postId);
+            XhsContent content;
+            try {
+                content = crawlerService.crawlContent(url);
+                if (content == null) {
+                    throw new BusinessException("ERR_CRAWL_FAILED", "内容爬取失败: 返回内容为空");
+                }
+            } catch (IllegalArgumentException e) {
+                // URL验证失败
+                log.error("[审核流程] URL验证失败: {}", e.getMessage());
+                throw new BusinessException("ERR_INVALID_URL", "无效的URL: " + e.getMessage(), e);
+            } catch (RuntimeException e) {
+                // 爬取或验证失败
+                log.error("[审核流程] 内容爬取失败: postId={}, error={}", postId, e.getMessage());
+                throw new BusinessException("ERR_CRAWL_FAILED",
+                        "内容爬取失败: " + e.getMessage() + "。请检查链接是否有效，或稍后重试", e);
             }
+            log.info("[审核流程] 内容获取成功: postId={}, title={}", postId, content.getTitle());
 
             // 4. Agent审核
+            log.info("[审核流程] 调用ContentAuditAgent进行AI审核: postId={}", postId);
             AuditDecision decision = contentAuditAgent.auditContent(content);
+            log.info("[审核流程] Agent审核完成: postId={}, status={}, confidence={}",
+                    postId, decision.getStatus(), decision.getConfidenceScore());
 
             // 5. 保存审核结果
+            log.debug("[审核流程] 保存审核结果到数据库: postId={}", postId);
             saveAuditResult(decision, url);
 
-            log.info("审核流程完成: postId={}, status={}", postId, decision.getStatus());
+            log.info("[审核流程完成] postId={}, status={}, 耗时统计已记录", postId, decision.getStatus());
             return decision;
 
         } catch (Exception e) {
@@ -91,7 +113,7 @@ public class ContentAuditService {
     private String extractPostId(String url) {
         Matcher matcher = POST_ID_PATTERN.matcher(url);
         if (matcher.find()) {
-            return matcher.group(1);
+            return matcher.group(2);
         }
         throw new BusinessException("ERR_INVALID_URL", "无法从URL中提取postId: " + url);
     }

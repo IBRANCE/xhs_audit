@@ -40,11 +40,16 @@ spring:
   # Spring AI配置
   ai:
     openai:
-      api-key: ${OPENAI_API_KEY:sk-your-api-key}
-      base-url: https://api.openai.com/v1
-      model: gpt-4-turbo
-      temperature: 0.3
-      max-tokens: 2000
+      api-key: ${OPENAI_API_KEY:sk-local-test}
+      base-url: ${OPENAI_BASE_URL:http://127.0.0.1:1234/v1}
+      chat:
+        model: ${OPENAI_CHAT_MODEL:qwen/qwen3-4b}
+        temperature: 0.3
+        max-tokens: 2000
+      vision:
+        model: ${OPENAI_VISION_MODEL:zai-org/glm-4.6v-flash}
+        temperature: 0.3
+        max-tokens: 2000
   
   # 文件上传配置  
   servlet:
@@ -79,6 +84,7 @@ audit:
     concurrent-crawl-threads: 3
     timeout-seconds: 30
     retry-times: 3
+    headless: false  # 是否使用无头浏览器（开发环境建议false，生产环境建议true）
     delay-ms:
       min: 2000
       max: 5000
@@ -99,8 +105,8 @@ audit:
   
   # Vision配置（可选）
   vision:
-    enabled: false
-    provider: gpt-4-vision
+    enabled: true
+    provider: local-vision
     max-image-size: 20971520  # 20MB
     request-timeout: 30
   

@@ -14,7 +14,18 @@ import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import org.apache.poi.ss.usermodel.*;
+import org.apache.poi.ss.usermodel.BorderStyle;
+import org.apache.poi.ss.usermodel.Cell;
+import org.apache.poi.ss.usermodel.CellStyle;
+import org.apache.poi.ss.usermodel.FillPatternType;
+import org.apache.poi.ss.usermodel.Font;
+import org.apache.poi.ss.usermodel.HorizontalAlignment;
+import org.apache.poi.ss.usermodel.IndexedColors;
+import org.apache.poi.ss.usermodel.Row;
+import org.apache.poi.ss.usermodel.Sheet;
+import org.apache.poi.ss.usermodel.VerticalAlignment;
+import org.apache.poi.ss.usermodel.Workbook;
+import org.apache.poi.ss.usermodel.WorkbookFactory;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -50,10 +61,10 @@ public class ExcelAuditService {
 
     // 小红书链接正则表达式
     private static final Pattern URL_PATTERN = Pattern.compile(
-            "https?://(?:www\\.|m\\.)?(?:xiaohongshu\\.com/explore/[a-zA-Z0-9_-]+|xhs\\.com/[a-zA-Z0-9_-]+)");
+            "https?://(?:www\\.|m\\.)?(?:xiaohongshu\\.com/(?:explore|discovery/item)/[a-zA-Z0-9_-]+|xhs\\.com/[a-zA-Z0-9_-]+)");
 
     private static final Pattern POST_ID_PATTERN = Pattern.compile(
-            "/explore/([a-zA-Z0-9_-]+)");
+            "/(?:explore|discovery/item)/([a-zA-Z0-9_-]+)");
 
     private static final long MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
 
@@ -65,22 +76,24 @@ public class ExcelAuditService {
      */
     public String processExcelUpload(MultipartFile file) {
         try {
-            log.info("开始处理Excel上传: filename={}, size={}",
+            log.info("[同步阶段] 开始处理Excel上传: filename={}, size={}",
                     file.getOriginalFilename(), file.getSize());
 
             // 1. 验证文件
             validateFile(file);
 
             // 2. 解析Excel，提取链接
+            log.info("[同步阶段] Apache POI解析Excel，提取小红书链接...");
             List<String> urls = extractUrlsFromExcel(file.getInputStream());
 
             if (urls.isEmpty()) {
                 throw new BusinessException("ERR_NO_VALID_LINKS", "Excel中未找到有效的小红书链接");
             }
+            log.info("[同步阶段] Excel解析完成: 提取到{}条链接", urls.size());
 
             // 3. 去重
             Set<String> uniqueUrls = new LinkedHashSet<>(urls);
-            log.info("链接去重: 原始{}条, 去重后{}条", urls.size(), uniqueUrls.size());
+            log.info("[同步阶段] 链接验证与去重: 原始{}条, 去重后{}条", urls.size(), uniqueUrls.size());
 
             // 4. 创建审核任务
             String jobId = generateJobId();
@@ -96,11 +109,13 @@ public class ExcelAuditService {
             job.setUpdatedAt(LocalDateTime.now());
 
             auditJobRepository.save(job);
-            log.info("审核任务已创建: jobId={}, totalLinks={}", jobId, uniqueUrls.size());
+            log.info("[同步阶段] 创建审核任务: jobId={}, status=PENDING, totalLinks={}", jobId, uniqueUrls.size());
 
             // 5. 提交异步任务
+            log.info("[同步阶段] 提交后台异步任务: jobId={}", jobId);
             asyncAuditService.processAuditJob(jobId, new ArrayList<>(uniqueUrls));
 
+            log.info("[同步阶段完成] 返回jobId给用户: {}, 用户无需等待，可通过jobId查询进度", jobId);
             return jobId;
 
         } catch (IOException e) {

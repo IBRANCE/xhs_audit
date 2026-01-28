@@ -1,0 +1,40 @@
+# 本地开发配置文件
+# 使用方式: mvn spring-boot:run -Dspring-boot.run.profiles=local
+# 或者设置环境变量: export SPRING_PROFILES_ACTIVE=local
+
+spring:
+  ai:
+    openai:
+      # 本地模型服务地址（不要包含/v1，代码会自动追加）
+      base-url: http://127.0.0.1:1234
+      # 本地模型不需要真实的API Key
+      api-key: sk-local-test
+      # 请求超时时间（秒），本地模型推理可能较慢
+      timeout: 120
+      
+      # 文本模型配置
+      chat:
+        model: qwen/qwen3-4b
+        temperature: 0.3
+        max-tokens: 2000
+      
+      # 图像模型配置
+      vision:
+        model: zai-org/glm-4.6v-flash
+        temperature: 0.3
+        max-tokens: 2000
+
+# 启用vision功能
+audit:
+  vision:
+    enabled: true
+    provider: local-vision
+    max-image-size: 20971520  # 20MB
+    request-timeout: 30
+
+# 开发环境日志级别
+logging:
+  level:
+    root: INFO
+    com.xhs.audit: DEBUG
+    org.springframework.ai: DEBUG

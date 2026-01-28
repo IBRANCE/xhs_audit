@@ -17,7 +17,11 @@ import java.util.stream.Collectors;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.stereotype.Component;
 
-import com.microsoft.playwright.*;
+import com.microsoft.playwright.Browser;
+import com.microsoft.playwright.BrowserContext;
+import com.microsoft.playwright.BrowserType;
+import com.microsoft.playwright.Page;
+import com.microsoft.playwright.Playwright;
 
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
@@ -54,10 +58,16 @@ public class PlaywrightManager implements DisposableBean {
     private static final int MAX_PAGES_PER_BROWSER = 10;
     private static final int MAX_FAILURES_THRESHOLD = 3;
 
+    @org.springframework.beans.factory.annotation.Value("${audit.crawler.headless:true}")
+    private boolean headless;
+
     private BlockingQueue<BrowserInstance> browserPool;
     private ScheduledExecutorService healthChecker;
     private Playwright playwright;
     private volatile boolean isShuttingDown = false;
+
+    // 跟踪已创建的浏览器实例总数（用于按需创建）
+    private final AtomicInteger totalBrowserCount = new AtomicInteger(0);
 
     /**
      * 浏览器实例包装类
@@ -167,28 +177,19 @@ public class PlaywrightManager implements DisposableBean {
      */
     @PostConstruct
     public void initBrowserPool() {
-        log.info("正在初始化浏览器实例池，目标大小: {}", POOL_SIZE);
+        log.info("正在初始化浏览器实例池，按需创建，最大上限: {}, 无头模式: {}", POOL_SIZE, headless);
 
         try {
             // 创建Playwright实例
             playwright = Playwright.create();
             browserPool = new LinkedBlockingQueue<>(POOL_SIZE);
 
-            // 创建浏览器实例
-            for (int i = 0; i < POOL_SIZE; i++) {
-                try {
-                    BrowserInstance instance = createBrowserInstance(i);
-                    browserPool.offer(instance);
-                    log.info("浏览器实例 {} 创建成功", i + 1);
-                } catch (Exception e) {
-                    log.error("创建浏览器实例 {} 失败", i + 1, e);
-                }
-            }
+            // 不预先创建实例，改为按需创建
+            log.info("浏览器实例池初始化完成: 按需创建模式，当前实例数: 0");
 
             // 启动健康检查线程
             scheduleHealthCheck();
 
-            log.info("浏览器实例池初始化完成: {} 个实例", browserPool.size());
         } catch (Exception e) {
             log.error("浏览器实例池初始化失败", e);
             throw new RuntimeException("PlaywrightManager初始化失败", e);
@@ -204,7 +205,7 @@ public class PlaywrightManager implements DisposableBean {
         // 启动Chromium浏览器
         instance.browser = playwright.chromium().launch(
                 new BrowserType.LaunchOptions()
-                        .setHeadless(true) // 无头模式
+                        .setHeadless(headless) // 根据配置决定是否使用无头模式
                         .setArgs(Arrays.asList(
                                 "--disable-blink-features=AutomationControlled",
                                 "--no-sandbox",
@@ -213,8 +214,19 @@ public class PlaywrightManager implements DisposableBean {
         instance.lastUsedTime = System.currentTimeMillis();
         instance.failureCount.set(0);
 
+        // 增加实例计数
+        totalBrowserCount.incrementAndGet();
+
         log.debug("创建浏览器实例 {}: {}", index, instance.browser);
         return instance;
+    }
+
+    /**
+     * 获取当前浏览器实例总数
+     * 包括池中的和正在使用的
+     */
+    private int getTotalBrowserCount() {
+        return totalBrowserCount.get();
     }
 
     /**
@@ -234,9 +246,25 @@ public class PlaywrightManager implements DisposableBean {
                     BORROW_TIMEOUT_SECONDS,
                     TimeUnit.SECONDS);
 
+            // 如果池中没有实例，且池未满，则创建新实例
             if (instance == null) {
-                log.warn("浏览器池超时，重试 {}/{}", retry + 1, MAX_RETRIES);
-                continue;
+                int currentSize = getTotalBrowserCount();
+                if (currentSize < POOL_SIZE) {
+                    log.info("浏览器池为空且未满（当前 {}/{}），按需创建新实例", currentSize, POOL_SIZE);
+                    try {
+                        instance = createBrowserInstance(currentSize);
+                        log.info("浏览器实例 {} 创建成功（按需创建）", currentSize + 1);
+                    } catch (Exception e) {
+                        log.error("按需创建浏览器实例失败", e);
+                        if (retry < MAX_RETRIES - 1) {
+                            continue;
+                        }
+                        throw new RuntimeException("无法创建浏览器实例", e);
+                    }
+                } else {
+                    log.warn("浏览器池已满且无可用实例，重试 {}/{}", retry + 1, MAX_RETRIES);
+                    continue;
+                }
             }
 
             if (!instance.isHealthy()) {
