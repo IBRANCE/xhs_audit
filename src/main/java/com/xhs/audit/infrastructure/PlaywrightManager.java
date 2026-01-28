@@ -69,15 +69,39 @@ public class PlaywrightManager implements DisposableBean {
     // 跟踪已创建的浏览器实例总数（用于按需创建）
     private final AtomicInteger totalBrowserCount = new AtomicInteger(0);
 
+    // 池操作锁：保护池状态检查和实例创建的原子性
+    private final Object poolLock = new Object();
+
     /**
      * 浏览器实例包装类
      * 跟踪浏览器状态和活跃Page
+     * 使用 synchronized 保证同一时刻只被一个线程使用
      */
     static class BrowserInstance {
         Browser browser;
         final AtomicInteger failureCount = new AtomicInteger(0);
         long lastUsedTime;
         final Set<String> activePageIds = ConcurrentHashMap.newKeySet();
+        volatile boolean inUse = false; // 标记实例是否正在被使用
+
+        /**
+         * 标记为使用中
+         * @return true 如果成功标记，false 如果已被其他线程标记
+         */
+        synchronized boolean tryMarkInUse() {
+            if (inUse) {
+                return false;
+            }
+            inUse = true;
+            return true;
+        }
+
+        /**
+         * 标记为可用
+         */
+        synchronized void markAvailable() {
+            inUse = false;
+        }
 
         /**
          * 检查浏览器实例是否健康
@@ -231,7 +255,9 @@ public class PlaywrightManager implements DisposableBean {
 
     /**
      * 从池中借用Page
-     * 
+     * 使用 inUse 标记保证同一BrowserInstance同一时刻只被一个线程使用
+     * 使用 poolLock 同步锁保证池操作和实例创建的原子性
+     *
      * @return PageWrapper 页面包装器，使用完后必须关闭
      * @throws InterruptedException          如果等待被中断
      * @throws BrowserPoolExhaustedException 如果池中没有可用实例
@@ -241,46 +267,79 @@ public class PlaywrightManager implements DisposableBean {
             throw new IllegalStateException("浏览器池正在关闭，无法借用新Page");
         }
 
-        for (int retry = 0; retry < MAX_RETRIES; retry++) {
-            BrowserInstance instance = browserPool.poll(
-                    BORROW_TIMEOUT_SECONDS,
-                    TimeUnit.SECONDS);
+        BrowserInstance instance = null;
+        BrowserContext context = null;
+        Page page = null;
 
-            // 如果池中没有实例，且池未满，则创建新实例
-            if (instance == null) {
-                int currentSize = getTotalBrowserCount();
-                if (currentSize < POOL_SIZE) {
-                    log.info("浏览器池为空且未满（当前 {}/{}），按需创建新实例", currentSize, POOL_SIZE);
-                    try {
-                        instance = createBrowserInstance(currentSize);
-                        log.info("浏览器实例 {} 创建成功（按需创建）", currentSize + 1);
-                    } catch (Exception e) {
-                        log.error("按需创建浏览器实例失败", e);
-                        if (retry < MAX_RETRIES - 1) {
-                            continue;
+        // 整个获取逻辑在锁保护下执行，保证原子性
+        synchronized (poolLock) {
+            for (int retry = 0; retry < MAX_RETRIES; retry++) {
+                instance = browserPool.poll(BORROW_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+
+                if (instance == null) {
+                    // 池为空，尝试按需创建
+                    int currentSize = getTotalBrowserCount();
+                    if (currentSize < POOL_SIZE) {
+                        log.info("浏览器池为空且未满（当前 {}/{}），按需创建新实例", currentSize, POOL_SIZE);
+                        try {
+                            instance = createBrowserInstance(currentSize);
+                            log.info("浏览器实例 {} 创建成功（按需创建）", currentSize + 1);
+                            // 创建成功后直接标记使用
+                            instance.tryMarkInUse();
+                            break;
+                        } catch (Exception e) {
+                            log.error("按需创建浏览器实例失败", e);
+                            instance = null;
                         }
-                        throw new RuntimeException("无法创建浏览器实例", e);
                     }
-                } else {
+                }
+
+                // 检查实例是否健康
+                if (instance != null && !instance.isHealthy()) {
+                    log.warn("检测到不健康的浏览器实例，正在重建");
+                    instance.close();
+                    instance = null;
+
+                    int currentSize = getTotalBrowserCount();
+                    if (currentSize < POOL_SIZE) {
+                        try {
+                            instance = createBrowserInstance(currentSize);
+                            log.info("重建浏览器实例 {} 成功", currentSize + 1);
+                            instance.tryMarkInUse();
+                        } catch (Exception e) {
+                            log.error("重建浏览器实例失败", e);
+                            instance = null;
+                        }
+                    }
+                }
+
+                // 尝试标记为使用中
+                if (instance != null) {
+                    if (!instance.tryMarkInUse()) {
+                        log.debug("浏览器实例正被其他线程使用，归还并尝试其他实例");
+                        browserPool.offer(instance);
+                        instance = null;
+                        continue;
+                    }
+                    // 成功获取并标记，跳出循环
+                    break;
+                }
+
+                // 如果获取失败，继续循环尝试
+                if (retry < MAX_RETRIES - 1) {
                     log.warn("浏览器池已满且无可用实例，重试 {}/{}", retry + 1, MAX_RETRIES);
                     continue;
                 }
+                throw new BrowserPoolExhaustedException("浏览器池耗尽，重试 " + MAX_RETRIES + " 次均失败");
             }
 
-            if (!instance.isHealthy()) {
-                log.warn("检测到不健康的浏览器实例，正在重建");
-                instance.close();
-                try {
-                    instance = createBrowserInstance(retry);
-                } catch (Exception e) {
-                    log.error("重建浏览器实例失败", e);
-                    continue;
-                }
+            if (instance == null) {
+                throw new BrowserPoolExhaustedException("浏览器池耗尽，重试 " + MAX_RETRIES + " 次均失败");
             }
 
             try {
                 // 创建新的BrowserContext（模拟iPhone 13 Pro）
-                BrowserContext context = instance.browser.newContext(
+                context = instance.browser.newContext(
                         new Browser.NewContextOptions()
                                 .setUserAgent(
                                         "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) " +
@@ -289,7 +348,7 @@ public class PlaywrightManager implements DisposableBean {
                                 .setLocale("zh-CN"));
 
                 // 创建新的Page
-                Page page = context.newPage();
+                page = context.newPage();
                 String pageId = UUID.randomUUID().toString();
                 instance.activePageIds.add(pageId);
                 instance.lastUsedTime = System.currentTimeMillis();
@@ -298,19 +357,24 @@ public class PlaywrightManager implements DisposableBean {
                 return new PageWrapper(page, context, instance, pageId, this);
 
             } catch (Exception e) {
-                log.error("创建Page失败，重试 {}/{}", retry + 1, MAX_RETRIES, e);
-                instance.failureCount.incrementAndGet();
-                browserPool.offer(instance); // 返回不健康的实例
+                log.error("创建Page失败", e);
+                if (instance != null) {
+                    instance.failureCount.incrementAndGet();
+                    instance.markAvailable();
+                    browserPool.offer(instance);
+                }
+                if (context != null) {
+                    try { context.close(); } catch (Exception ignored) {}
+                }
+                throw new RuntimeException("无法创建Page", e);
             }
         }
-
-        throw new BrowserPoolExhaustedException(
-                "浏览器池耗尽，重试 " + MAX_RETRIES + " 次均失败");
     }
 
     /**
      * 关闭Page并归还浏览器实例
      * 必须在finally块或try-with-resources中调用
+     * 使用 synchronized 标记保证线程安全
      */
     public void closePage(PageWrapper wrapper) {
         if (wrapper == null)
@@ -342,12 +406,15 @@ public class PlaywrightManager implements DisposableBean {
         } catch (Exception e) {
             log.error("关闭Page过程中出错", e);
         } finally {
-            // 4. 归还浏览器实例到池（即使关闭失败）
-            if (wrapper.instance != null && !isShuttingDown) {
-                try {
-                    browserPool.offer(wrapper.instance);
-                } catch (Exception e) {
-                    log.warn("归还浏览器实例失败", e);
+            // 4. 标记为可用并归还到池
+            if (wrapper.instance != null) {
+                wrapper.instance.markAvailable();
+                if (!isShuttingDown) {
+                    try {
+                        browserPool.offer(wrapper.instance);
+                    } catch (Exception e) {
+                        log.warn("归还浏览器实例失败", e);
+                    }
                 }
             }
         }

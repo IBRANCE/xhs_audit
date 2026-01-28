@@ -70,16 +70,17 @@ public class AsyncConfig {
 
     /**
      * 审核专用线程池
-     * 用于文本和图片的并行审核
+     * 用于批量审核任务的并行处理
+     * 线程池大小 = 浏览器池大小(3)，保证最多3个并发爬取任务
      */
     @Bean(name = "auditTaskExecutor")
     public Executor auditTaskExecutor() {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
 
-        // 审核任务需要较少线程，避免同时占用太多LLM资源
-        executor.setCorePoolSize(2);
-        executor.setMaxPoolSize(4);
-        executor.setQueueCapacity(10);
+        // 线程池大小与浏览器池大小匹配，保证最多3个并发爬取任务
+        executor.setCorePoolSize(3);
+        executor.setMaxPoolSize(3);
+        executor.setQueueCapacity(100);
         executor.setThreadNamePrefix("audit-async-");
         executor.setKeepAliveSeconds(60);
         executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
@@ -87,7 +88,8 @@ public class AsyncConfig {
         executor.setAwaitTerminationSeconds(120);
 
         executor.initialize();
-        log.info("审核专用线程池已初始化");
+        log.info("审核专用线程池已初始化: corePoolSize={}, maxPoolSize={} (与浏览器池大小匹配)",
+                3, 3);
 
         return executor;
     }
