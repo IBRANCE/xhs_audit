@@ -248,7 +248,7 @@ public class ExcelAuditService {
 
                 // 创建标题行
                 Row headerRow = sheet.createRow(0);
-                String[] headers = { "序号", "链接", "审核状态", "驳回原因", "置信度", "审核时间" };
+                String[] headers = { "序号", "链接", "审核状态", "车型要求", "内容类型", "话题标签", "内容态度", "图片要求", "置信度", "审核时间" };
                 for (int i = 0; i < headers.length; i++) {
                     Cell cell = headerRow.createCell(i);
                     cell.setCellValue(headers[i]);
@@ -290,30 +290,52 @@ public class ExcelAuditService {
                     cell2.setCellStyle("PASSED".equals(result.getAuditStatus()) ? passStyle
                             : "REJECTED".equals(result.getAuditStatus()) ? rejectStyle : dataStyle);
 
-                    // 驳回原因
+                    // 提取各类型驳回原因
+                    Map<String, String> reasonsMap = parseReasonsByType(result.getReasons());
+
+                    // 车型要求
                     Cell cell3 = dataRow.createCell(3);
-                    String reasonText = formatReasons(result.getReasons());
-                    cell3.setCellValue(reasonText);
+                    cell3.setCellValue(reasonsMap.getOrDefault("car_model", ""));
                     cell3.setCellStyle(dataStyle);
 
-                    // 置信度
+                    // 内容类型
                     Cell cell4 = dataRow.createCell(4);
-                    if (result.getConfidenceScore() != null) {
-                        cell4.setCellValue(result.getConfidenceScore().doubleValue());
-                    } else {
-                        cell4.setCellValue("-");
-                    }
+                    cell4.setCellValue(reasonsMap.getOrDefault("content_type", ""));
                     cell4.setCellStyle(dataStyle);
 
-                    // 审核时间
+                    // 话题标签
                     Cell cell5 = dataRow.createCell(5);
+                    cell5.setCellValue(reasonsMap.getOrDefault("tag", ""));
+                    cell5.setCellStyle(dataStyle);
+
+                    // 内容态度
+                    Cell cell6 = dataRow.createCell(6);
+                    cell6.setCellValue(reasonsMap.getOrDefault("attitude", ""));
+                    cell6.setCellStyle(dataStyle);
+
+                    // 图片要求
+                    Cell cell7 = dataRow.createCell(7);
+                    cell7.setCellValue(reasonsMap.getOrDefault("image", ""));
+                    cell7.setCellStyle(dataStyle);
+
+                    // 置信度
+                    Cell cell8 = dataRow.createCell(8);
+                    if (result.getConfidenceScore() != null) {
+                        cell8.setCellValue(result.getConfidenceScore().doubleValue());
+                    } else {
+                        cell8.setCellValue("-");
+                    }
+                    cell8.setCellStyle(dataStyle);
+
+                    // 审核时间
+                    Cell cell9 = dataRow.createCell(9);
                     if (result.getAuditedAt() != null) {
                         DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
-                        cell5.setCellValue(result.getAuditedAt().format(formatter));
+                        cell9.setCellValue(result.getAuditedAt().format(formatter));
                     } else {
-                        cell5.setCellValue("-");
+                        cell9.setCellValue("-");
                     }
-                    cell5.setCellStyle(dataStyle);
+                    cell9.setCellStyle(dataStyle);
                 }
 
                 // 自动调整列宽
@@ -418,6 +440,42 @@ public class ExcelAuditService {
             sb.append(reason.get("dimension")).append(": ").append(reason.get("reason"));
         }
         return sb.toString();
+    }
+
+    /**
+     * 按类型解析驳回原因
+     */
+    private Map<String, String> parseReasonsByType(List<Map<String, Object>> reasons) {
+        Map<String, String> result = new java.util.HashMap<>();
+        result.put("car_model", "");
+        result.put("content_type", "");
+        result.put("tag", "");
+        result.put("attitude", "");
+        result.put("image", "");
+
+        if (reasons == null || reasons.isEmpty()) {
+            return result;
+        }
+
+        for (Map<String, Object> reason : reasons) {
+            Object dimensionObj = reason.get("dimension");
+            Object reasonObj = reason.get("reason");
+
+            if (dimensionObj == null) continue;
+
+            String dimension = dimensionObj.toString();
+            String reasonText = reasonObj != null ? reasonObj.toString() : "";
+
+            switch (dimension) {
+                case "car_model" -> result.put("car_model", reasonText);
+                case "content_type" -> result.put("content_type", reasonText);
+                case "tag" -> result.put("tag", reasonText);
+                case "attitude" -> result.put("attitude", reasonText);
+                case "image" -> result.put("image", reasonText);
+            }
+        }
+
+        return result;
     }
 
     /**
