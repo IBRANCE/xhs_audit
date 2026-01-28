@@ -63,7 +63,7 @@ public class ContentAuditService {
             // 2. 检查是否已审核（非强制刷新时）
             if (!forceRefresh) {
                 log.debug("[审核流程] 检查审核结果缓存: postId={}", postId);
-                Optional<AuditResult> existingResult = auditResultRepository.findByPostId(postId);
+                Optional<AuditResult> existingResult = auditResultRepository.findFirstByPostIdOrderByAuditedAtDesc(postId);
                 if (existingResult.isPresent()) {
                     log.info("[审核流程] 命中审核结果缓存，跳过重复审核: postId={}", postId);
                     return convertToDecision(existingResult.get());
