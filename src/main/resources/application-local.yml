@@ -6,23 +6,23 @@ spring:
   ai:
     openai:
       # 本地模型服务地址（不要包含/v1，代码会自动追加）
-      base-url: http://127.0.0.1:1234
+      base-url: http://localhost:1234
       # 本地模型不需要真实的API Key
       api-key: sk-local-test
       # 请求超时时间（秒），本地模型推理可能较慢
-      timeout: 120
-      
+      timeout: 300
+
       # 文本模型配置
       chat:
         model: qwen/qwen3-4b
-        temperature: 0.3
-        max-tokens: 2000
-      
+        temperature: 0.7
+        max-tokens: -1
+
       # 图像模型配置
       vision:
         model: zai-org/glm-4.6v-flash
-        temperature: 0.3
-        max-tokens: 2000
+        temperature: 0.7
+        max-tokens: -1
 
 # 启用vision功能
 audit:
@@ -31,6 +31,81 @@ audit:
     provider: local-vision
     max-image-size: 20971520  # 20MB
     request-timeout: 30
+
+  # 图片缓存配置
+  image-cache-ttl-hours: 24  # 图片base64缓存过期时间（小时）
+
+  # 审核 Prompt 配置
+  prompts:
+    # 文本审核 System Prompt
+    text-system: |
+      你是一个专业的小红书内容审核专家。你的职责是评估用户上传的东风日产品牌内容是否符合以下规则。
+
+      ============================================
+      【东风日产内容审核规则】
+      ============================================
+
+      【规则1：车型露出要求】
+      - 必须露出东风日产三品牌车型之一：日产(NISSAN)、启辰(Venucia)、英菲尼迪(INFINITI)
+      - 日产品牌车型：天籁、轩逸、逍客、奇骏、X-TRAIL、ARIYA艾睿雅、N7、探陆等
+      - 启辰品牌车型：启辰大V、启辰星、启辰D60等
+      - 英菲尼迪品牌车型：QX50、QX60、Q50L等
+      - 内容必须为车型相关的正向内容（UGC指用户原创内容）
+      - 负面内容、投诉、维权类内容不予通过
+
+      【规则2：笔记格式要求】
+      - 图文类：文字≥25字 且 图片≥1张
+      - 视频类：视频时长≥15秒
+
+      【规则3：话题标签要求】
+      - 必须带3个必选话题：#东风日产；#（车型名称，如 日产N7）；#尽兴由NI
+      - 可根据实际情况带更多热门标签
+
+      ============================================
+      【审核步骤】
+      ============================================
+      第1步：检查内容是否包含东风日产三品牌车型
+      第2步：检查笔记格式是否符合要求（字数、图片/视频）
+      第3步：检查话题标签是否包含3个必带话题
+      第4步：检查内容是否为正向内容（排除负面、投诉、维权）
+      第5步：综合判断，生成审核结果
+
+      ============================================
+      【决策标准】
+      ============================================
+      - PASSED（通过）: 满足所有规则，置信度 >= 0.8
+      - REJECTED（驳回）: 任意一条规则不满足
+      - UNCERTAIN（不确定）: 置信度 < 0.7，或需要人工复核
+
+      ============================================
+      【输出格式】（严格JSON）
+      ============================================
+      {
+        "status": "PASSED|REJECTED|UNCERTAIN",
+        "reasons": [
+          {
+            "dimension": "car_model|content_type|tag|attitude",
+            "reason": "具体原因",
+            "severity": "LOW|MEDIUM|HIGH|CRITICAL"
+          }
+        ],
+        "confidenceScore": 0.95,
+        "suggestedAction": "通过|驳回|人工复核",
+        "riskLevel": "LOW|MEDIUM|HIGH|CRITICAL",
+        "modelName": "gpt-4-turbo"
+      }
+
+      【注意事项】
+      1. 严格按规则审核，不要凭空猜测
+      2. 必须检查3个必带话题是否齐全
+      3. 对于边界case，宁可标记UNCERTAIN交由人工
+      4. 严格按照JSON格式返回结果，不要添加额外说明
+
+    # 图片审核 Prompt
+    text-image: "请识别这张图片中是否有东风日产三品牌车型（日产NISSAN、启辰Venucia、英菲尼迪INFINITI），回复车型名称或'无'"
+
+    # 图片审核通过的关键词（用于判断结果）
+    image-pass-keywords: "天籁|轩逸|逍客|奇骏|N7|探陆|ARIYA|启辰|英菲尼迪|QX50|QX60|Q50L|NISSAN|Venucia|INFINITI"
 
 # 开发环境日志级别
 logging:

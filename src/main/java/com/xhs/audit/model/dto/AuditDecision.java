@@ -3,6 +3,7 @@ package com.xhs.audit.model.dto;
 import java.time.LocalDateTime;
 import java.util.List;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 import lombok.AllArgsConstructor;
@@ -13,7 +14,7 @@ import lombok.NoArgsConstructor;
 /**
  * 审核决策对象
  * Agent返回的结构化审核结果
- * 
+ *
  * @author XHS Audit System
  * @since 2026-01-27
  */
@@ -38,6 +39,7 @@ public class AuditDecision {
      * 审核状态: PASSED / REJECTED / UNCERTAIN
      */
     @JsonProperty("audit_status")
+    @JsonAlias({"status"})
     private String status;
 
     /**
@@ -49,24 +51,28 @@ public class AuditDecision {
      * 置信度 (0-1)
      */
     @JsonProperty("confidence_score")
+    @JsonAlias({"confidenceScore"})
     private Double confidenceScore;
 
     /**
      * 建议处理方式
      */
     @JsonProperty("suggested_action")
+    @JsonAlias({"suggestedAction"})
     private String suggestedAction;
 
     /**
      * 风险等级: LOW / MEDIUM / HIGH / CRITICAL
      */
     @JsonProperty("risk_level")
+    @JsonAlias({"riskLevel"})
     private String riskLevel;
 
     /**
      * 使用的LLM模型名称
      */
     @JsonProperty("model_name")
+    @JsonAlias({"modelName"})
     private String modelName;
 
     /**

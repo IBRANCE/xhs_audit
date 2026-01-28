@@ -67,4 +67,28 @@ public class AsyncConfig {
 
         return executor;
     }
+
+    /**
+     * 审核专用线程池
+     * 用于文本和图片的并行审核
+     */
+    @Bean(name = "auditTaskExecutor")
+    public Executor auditTaskExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+
+        // 审核任务需要较少线程，避免同时占用太多LLM资源
+        executor.setCorePoolSize(2);
+        executor.setMaxPoolSize(4);
+        executor.setQueueCapacity(10);
+        executor.setThreadNamePrefix("audit-async-");
+        executor.setKeepAliveSeconds(60);
+        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
+        executor.setWaitForTasksToCompleteOnShutdown(true);
+        executor.setAwaitTerminationSeconds(120);
+
+        executor.initialize();
+        log.info("审核专用线程池已初始化");
+
+        return executor;
+    }
 }

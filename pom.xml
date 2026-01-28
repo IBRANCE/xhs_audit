@@ -200,6 +200,12 @@
             <scope>test</scope>
         </dependency>
 
+        <!-- Apache HttpClient (for LM Studio compatibility) -->
+        <dependency>
+            <groupId>org.apache.httpcomponents.client5</groupId>
+            <artifactId>httpclient5</artifactId>
+        </dependency>
+
         <!-- SLF4J + Logback (日志) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
