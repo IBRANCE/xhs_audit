@@ -73,14 +73,14 @@ class AsyncAuditServiceTest {
         passedDecision.setStatus("PASSED");
         passedDecision.setConfidenceScore(0.95);
 
-        when(contentAuditService.auditContent(anyString(), anyBoolean()))
+        when(contentAuditService.auditContent(anyString(), anyBoolean(), anyString()))
                 .thenReturn(passedDecision);
 
         // Act
         asyncAuditService.processAuditJob(jobId, urls);
 
         // Assert
-        verify(contentAuditService, times(1)).auditContent(urls.get(0), false);
+        verify(contentAuditService, times(1)).auditContent(urls.get(0), false, jobId);
         verify(auditJobRepository, atLeastOnce()).save(any(AuditJob.class));
 
         log.info("✓ 单URL异步审核测试通过");
@@ -114,18 +114,18 @@ class AsyncAuditServiceTest {
         rejectedDecision.setStatus("REJECTED");
         rejectedDecision.setConfidenceScore(0.85);
 
-        when(contentAuditService.auditContent(urls.get(0), false))
+        when(contentAuditService.auditContent(urls.get(0), false, jobId))
                 .thenReturn(passedDecision);
-        when(contentAuditService.auditContent(urls.get(1), false))
+        when(contentAuditService.auditContent(urls.get(1), false, jobId))
                 .thenReturn(rejectedDecision);
-        when(contentAuditService.auditContent(urls.get(2), false))
+        when(contentAuditService.auditContent(urls.get(2), false, jobId))
                 .thenReturn(passedDecision);
 
         // Act
         asyncAuditService.processAuditJob(jobId, urls);
 
         // Assert
-        verify(contentAuditService, times(3)).auditContent(anyString(), anyBoolean());
+        verify(contentAuditService, times(3)).auditContent(anyString(), anyBoolean(), anyString());
         verify(auditJobRepository, atLeastOnce()).save(any(AuditJob.class));
 
         log.info("✓ 批量URL异步审核测试通过");
@@ -155,11 +155,11 @@ class AsyncAuditServiceTest {
         AuditDecision passedDecision = new AuditDecision();
         passedDecision.setStatus("PASSED");
 
-        when(contentAuditService.auditContent(urls.get(0), false))
+        when(contentAuditService.auditContent(urls.get(0), false, jobId))
                 .thenReturn(passedDecision);
-        when(contentAuditService.auditContent(urls.get(1), false))
+        when(contentAuditService.auditContent(urls.get(1), false, jobId))
                 .thenThrow(new RuntimeException("Invalid URL"));
-        when(contentAuditService.auditContent(urls.get(2), false))
+        when(contentAuditService.auditContent(urls.get(2), false, jobId))
                 .thenReturn(passedDecision);
 
         // Act
@@ -167,7 +167,7 @@ class AsyncAuditServiceTest {
 
         // Assert
         // 验证三个URL都被尝试处理了
-        verify(contentAuditService, times(3)).auditContent(anyString(), anyBoolean());
+        verify(contentAuditService, times(3)).auditContent(anyString(), anyBoolean(), anyString());
         // 验证任务状态被更新（PARTIAL_SUCCESS因为有失败）
         verify(auditJobRepository, atLeastOnce()).save(any(AuditJob.class));
 
@@ -196,7 +196,7 @@ class AsyncAuditServiceTest {
         asyncAuditService.processAuditJob(jobId, urls);
 
         // Assert
-        verify(contentAuditService, never()).auditContent(anyString(), anyBoolean());
+        verify(contentAuditService, never()).auditContent(anyString(), anyBoolean(), anyString());
         verify(auditJobRepository, atLeastOnce()).save(any(AuditJob.class));
 
         log.info("✓ 空URL列表测试通过");
@@ -226,14 +226,14 @@ class AsyncAuditServiceTest {
         AuditDecision passedDecision = new AuditDecision();
         passedDecision.setStatus("PASSED");
 
-        when(contentAuditService.auditContent(anyString(), anyBoolean()))
+        when(contentAuditService.auditContent(anyString(), anyBoolean(), anyString()))
                 .thenReturn(passedDecision);
 
         // Act
         asyncAuditService.processAuditJob(jobId, urls);
 
         // Assert
-        verify(contentAuditService, times(25)).auditContent(anyString(), anyBoolean());
+        verify(contentAuditService, times(25)).auditContent(anyString(), anyBoolean(), anyString());
         // 验证进度更新被调用（每10条+最后一次）
         verify(auditJobRepository, atLeast(3)).save(any(AuditJob.class));
 
@@ -264,14 +264,14 @@ class AsyncAuditServiceTest {
         rejectedDecision.setStatus("REJECTED");
         rejectedDecision.setConfidenceScore(0.90);
 
-        when(contentAuditService.auditContent(anyString(), anyBoolean()))
+        when(contentAuditService.auditContent(anyString(), anyBoolean(), anyString()))
                 .thenReturn(rejectedDecision);
 
         // Act
         asyncAuditService.processAuditJob(jobId, urls);
 
         // Assert
-        verify(contentAuditService, times(2)).auditContent(anyString(), anyBoolean());
+        verify(contentAuditService, times(2)).auditContent(anyString(), anyBoolean(), anyString());
         verify(auditJobRepository, atLeastOnce()).save(any(AuditJob.class));
 
         log.info("✓ 全部驳回状态测试通过");

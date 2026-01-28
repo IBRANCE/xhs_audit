@@ -48,12 +48,13 @@ public class ContentAuditService {
      *
      * @param url          小红书链接
      * @param forceRefresh 是否强制刷新（跳过缓存）
+     * @param jobId        任务ID（批量审核时传入，单条审核可为null）
      * @return 审核决策
      */
     @Transactional
-    public AuditDecision auditContent(String url, boolean forceRefresh) {
+    public AuditDecision auditContent(String url, boolean forceRefresh, String jobId) {
         try {
-            log.info("[审核流程] 开始: url={}, forceRefresh={}", url, forceRefresh);
+            log.info("[审核流程] 开始: url={}, forceRefresh={}, jobId={}", url, forceRefresh, jobId);
 
             // 1. 提取postId
             String postId = extractPostId(url);
@@ -97,10 +98,10 @@ public class ContentAuditService {
                     postId, decision.getStatus(), decision.getConfidenceScore());
 
             // 5. 保存审核结果
-            log.debug("[审核流程] 保存审核结果到数据库: postId={}", postId);
-            saveAuditResult(decision, url);
+            log.debug("[审核流程] 保存审核结果到数据库: postId={}, jobId={}", postId, jobId);
+            saveAuditResult(decision, url, jobId);
 
-            log.info("[审核流程完成] postId={}, status={}, 耗时统计已记录", postId, decision.getStatus());
+            log.info("[审核流程完成] postId={}, status={}, jobId={}", postId, decision.getStatus(), jobId);
             return decision;
 
         } catch (Exception e) {
@@ -131,10 +132,11 @@ public class ContentAuditService {
     /**
      * 保存审核结果
      */
-    private void saveAuditResult(AuditDecision decision, String url) {
+    private void saveAuditResult(AuditDecision decision, String url, String jobId) {
         AuditResult result = new AuditResult();
         result.setPostId(decision.getPostId());
         result.setUrl(url);
+        result.setJobId(jobId);  // 保存任务ID
         result.setAuditStatus(decision.getStatus());
         result.setReasons(convertReasonsToList(decision.getReasons()));
         result.setConfidenceScore(
@@ -145,7 +147,7 @@ public class ContentAuditService {
         result.setAuditedAt(LocalDateTime.now());
 
         auditResultRepository.save(result);
-        log.info("审核结果已保存: postId={}", decision.getPostId());
+        log.info("审核结果已保存: postId={}, jobId={}", decision.getPostId(), jobId);
     }
 
     /**

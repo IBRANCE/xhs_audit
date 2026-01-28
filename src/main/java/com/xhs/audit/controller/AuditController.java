@@ -71,7 +71,8 @@ public class AuditController {
 
         AuditDecision decision = contentAuditService.auditContent(
                 request.getUrl(),
-                request.getForceRefresh());
+                request.getForceRefresh(),
+                null);  // 单条审核没有 jobId
 
         return ResponseEntity.ok(com.xhs.audit.model.dto.ApiResponse.success(decision));
     }
@@ -92,7 +93,7 @@ public class AuditController {
 
         for (String url : request.getLinks()) {
             try {
-                AuditDecision decision = contentAuditService.auditContent(url, false);
+                AuditDecision decision = contentAuditService.auditContent(url, false, null);
                 results.add(decision);
 
                 if ("PASSED".equals(decision.getStatus())) {

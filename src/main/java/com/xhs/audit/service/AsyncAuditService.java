@@ -57,8 +57,8 @@ public class AsyncAuditService {
                 String url = urls.get(i);
                 try {
                     log.info("[异步阶段] 处理第{}/{}条链接: {}", i + 1, urls.size(), url);
-                    // 审核单条内容
-                    AuditDecision decision = contentAuditService.auditContent(url, false);
+                    // 审核单条内容，传入 jobId 用于关联
+                    AuditDecision decision = contentAuditService.auditContent(url, false, jobId);
 
                     // 统计结果
                     if ("PASSED".equals(decision.getStatus())) {

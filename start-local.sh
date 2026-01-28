@@ -32,5 +32,8 @@ echo ""
 echo "启动应用..."
 echo ""
 
+# 重新清理再编译
+mvn clean compile
+
 # 启动Spring Boot应用
 mvn spring-boot:run -Dspring-boot.run.profiles=local

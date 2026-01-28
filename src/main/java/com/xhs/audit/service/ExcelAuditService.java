@@ -28,6 +28,7 @@ import org.apache.poi.ss.usermodel.Workbook;
 import org.apache.poi.ss.usermodel.WorkbookFactory;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -59,9 +60,9 @@ public class ExcelAuditService {
     @Autowired
     private AsyncAuditService asyncAuditService;
 
-    // 小红书链接正则表达式
+    // 小红书链接正则表达式 - 支持标准链接、短链接和查询参数
     private static final Pattern URL_PATTERN = Pattern.compile(
-            "https?://(?:www\\.|m\\.)?(?:xiaohongshu\\.com/(?:explore|discovery/item)/[a-zA-Z0-9_-]+|xhs\\.com/[a-zA-Z0-9_-]+)");
+            "https?://(?:www\\.|m\\.)?(?:xiaohongshu\\.com/(?:explore|discovery/item)/[a-zA-Z0-9_-]+|xhs\\.com/[a-zA-Z0-9_-]+|xhslink\\.com/o/[a-zA-Z0-9]+)(?:\\?[^\\s\"\']*)?");
 
     private static final Pattern POST_ID_PATTERN = Pattern.compile(
             "/(?:explore|discovery/item)/([a-zA-Z0-9_-]+)");
@@ -417,5 +418,91 @@ public class ExcelAuditService {
             sb.append(reason.get("dimension")).append(": ").append(reason.get("reason"));
         }
         return sb.toString();
+    }
+
+    /**
+     * 下载导入模板
+     *
+     * @return Excel模板字节数组
+     */
+    public byte[] downloadTemplate() {
+        log.info("生成导入模板文件");
+
+        try (Workbook workbook = new XSSFWorkbook()) {
+            Sheet sheet = workbook.createSheet("小红书链接");
+
+            // 创建标题样式
+            CellStyle headerStyle = createHeaderStyle(workbook);
+            CellStyle tipStyle = createTipStyle(workbook);
+            CellStyle dataStyle = createDataStyle(workbook);
+
+            // 第1行：标题
+            Row titleRow = sheet.createRow(0);
+            Cell titleCell = titleRow.createCell(0);
+            titleCell.setCellValue("小红书内容批量审核导入模板");
+            titleCell.setCellStyle(headerStyle);
+            sheet.addMergedRegion(new org.apache.poi.ss.util.CellRangeAddress(0, 0, 0, 2)); // 合并A到C列
+
+            // 第2行：提示
+            Row tipRow = sheet.createRow(1);
+            Cell tipCell = tipRow.createCell(0);
+            tipCell.setCellValue("请在下方填写需要审核的小红书链接，支持标准链接和短链接");
+            tipCell.setCellStyle(tipStyle);
+            sheet.addMergedRegion(new org.apache.poi.ss.util.CellRangeAddress(1, 1, 0, 2));
+
+            // 第4行：表头
+            Row headerRow = sheet.createRow(3);
+            String[] headers = { "序号", "小红书链接", "备注(可选)" };
+            for (int i = 0; i < headers.length; i++) {
+                Cell cell = headerRow.createCell(i);
+                cell.setCellValue(headers[i]);
+                cell.setCellStyle(headerStyle);
+            }
+
+            // 示例数据行（第5-7行）
+            String[][] examples = {
+                { "1", "https://www.xiaohongshu.com/explore/6970bf6f000000000e03ce88", "示例：标准链接" },
+                { "2", "https://www.xiaohongshu.com/discovery/item/abc123def456", "示例：另一种格式" },
+                { "3", "https://xhslink.com/o/uEBlswi8i6", "示例：短链接" }
+            };
+
+            for (int i = 0; i < examples.length; i++) {
+                Row dataRow = sheet.createRow(4 + i);
+                for (int j = 0; j < examples[i].length; j++) {
+                    Cell cell = dataRow.createCell(j);
+                    cell.setCellValue(examples[i][j]);
+                    cell.setCellStyle(dataStyle);
+                }
+            }
+
+            // 设置列宽
+            sheet.setColumnWidth(0, 10 * 256);  // 序号
+            sheet.setColumnWidth(1, 60 * 256);  // 链接
+            sheet.setColumnWidth(2, 25 * 256);  // 备注
+
+            // 写入字节数组
+            ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+            workbook.write(outputStream);
+
+            log.info("导入模板生成完成");
+            return outputStream.toByteArray();
+
+        } catch (IOException e) {
+            log.error("导入模板生成失败", e);
+            throw new BusinessException("ERR_TEMPLATE_GEN_FAILED", "模板生成失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 创建提示样式
+     */
+    private CellStyle createTipStyle(Workbook workbook) {
+        CellStyle style = workbook.createCellStyle();
+        Font font = workbook.createFont();
+        font.setFontHeightInPoints((short) 10);
+        font.setItalic(true);
+        style.setFont(font);
+        style.setAlignment(HorizontalAlignment.LEFT);
+        return style;
     }
 }
