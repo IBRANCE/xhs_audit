@@ -40,10 +40,12 @@ public class ContentAuditService {
 
     private static final Pattern POST_ID_PATTERN = Pattern.compile(
             "/(explore|discovery/item)/([a-zA-Z0-9_-]+)");
+    private static final Pattern SHORT_LINK_PATTERN = Pattern.compile(
+            "xhslink\\.com/o/([a-zA-Z0-9]+)");
 
     /**
      * 审核单条小红书内容（完整流程）
-     * 
+     *
      * @param url          小红书链接
      * @param forceRefresh 是否强制刷新（跳过缓存）
      * @return 审核决策
@@ -111,10 +113,18 @@ public class ContentAuditService {
      * 提取postId
      */
     private String extractPostId(String url) {
+        // 先尝试标准链接
         Matcher matcher = POST_ID_PATTERN.matcher(url);
         if (matcher.find()) {
             return matcher.group(2);
         }
+
+        // 短链接场景
+        Matcher shortMatcher = SHORT_LINK_PATTERN.matcher(url);
+        if (shortMatcher.find()) {
+            return "short_" + shortMatcher.group(1);
+        }
+
         throw new BusinessException("ERR_INVALID_URL", "无法从URL中提取postId: " + url);
     }
 

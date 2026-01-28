@@ -53,8 +53,11 @@ public class CrawlerService {
     private static final long CACHE_TTL_SECONDS = 86400;
     private static final int MAX_RETRY_ATTEMPTS = 3;
     private static final long[] RETRY_DELAYS_MS = { 1000, 2000, 4000 };
+    // 支持标准小红书链接和 xhslink.com 短链接
     private static final Pattern XHS_URL_PATTERN = Pattern.compile(
             "https://(?:www\\.)?xiaohongshu\\.com/(?:explore|discovery/item)/([a-zA-Z0-9_-]+)");
+    private static final Pattern XHS_SHORTLINK_PATTERN = Pattern.compile(
+            "https?://xhslink\\.com/o/([a-zA-Z0-9]+)");
 
     /**
      * 核心方法: 爬取内容(三级缓存 + 爬虫)
@@ -64,11 +67,27 @@ public class CrawlerService {
     public XhsContent crawlContent(String url) throws Exception {
         log.info("[爬虫服务] 开始爬取: url={}", url);
 
-        if (!isValidXhsUrl(url)) {
-            throw new IllegalArgumentException("无效的小红书URL: " + url);
+        // 检查是否是短链接
+        boolean isShortLink = XHS_SHORTLINK_PATTERN.matcher(url).find();
+
+        // 短链接场景：先用短链接ID作为postId，爬取后再更新
+        String postId;
+        if (isShortLink) {
+            java.util.regex.Matcher shortMatcher = XHS_SHORTLINK_PATTERN.matcher(url);
+            if (shortMatcher.find()) {
+                postId = "short_" + shortMatcher.group(1);
+                log.info("[爬虫服务] 检测到短链接，使用临时postId: {}", postId);
+            } else {
+                throw new IllegalArgumentException("无法解析短链接ID: " + url);
+            }
+        } else {
+            // 标准链接：直接提取postId
+            if (!isValidXhsUrl(url)) {
+                throw new IllegalArgumentException("无效的小红书URL: " + url);
+            }
+            postId = extractPostId(url);
         }
 
-        String postId = extractPostId(url);
         String cacheKey = CONTENT_CACHE_PREFIX + postId;
 
         // 第一级缓存: Redis (热数据)
@@ -107,6 +126,37 @@ public class CrawlerService {
         // 第三级: 执行爬虫 (带重试)
         log.info("[爬虫服务] 开始Playwright爬取: postId={}", postId);
         XhsContent content = crawlWithRetry(url);
+
+        // 注意：URL已在executeWebScraping中设置为最终跳转后的URL
+        // 短链接场景：尝试从页面中提取真实postId
+        if (isShortLink && content.getPostId() != null && !content.getPostId().startsWith("short_")) {
+            String realPostId = content.getPostId();
+            log.info("[爬虫服务] 短链接已解析，获取真实postId: {} -> {}", postId, realPostId);
+
+            // 更新content的postId
+            content.setPostId(realPostId);
+
+            // 用新postId重新保存到数据库
+            String newCacheKey = CONTENT_CACHE_PREFIX + realPostId;
+            log.debug("[爬虫服务] 更新缓存Key: {} -> {}", cacheKey, newCacheKey);
+
+            // 删除旧的短链接记录（如果存在）
+            final String oldCacheKey = cacheKey;
+            try {
+                contentRepository.findByUrl(url).ifPresent(oldContent -> {
+                    contentRepository.delete(oldContent);
+                    if (redisTemplate != null) {
+                        redisTemplate.delete(oldCacheKey);
+                    }
+                });
+            } catch (Exception e) {
+                log.warn("[爬虫服务] 删除旧记录失败: {}", e.getMessage());
+            }
+
+            // 用新postId保存
+            postId = realPostId;
+            cacheKey = newCacheKey;
+        }
 
         // 验证爬取内容的有效性
         validateCrawledContent(content);
@@ -179,6 +229,10 @@ public class CrawlerService {
 
             page.navigate(url, navigateOptions);
 
+            // 获取最终URL（短链接跳转后的真实URL）
+            String finalUrl = page.url();
+            log.debug("[爬虫服务] 页面URL: {} -> {}", url, finalUrl);
+
             // 等待主要内容加载完成
             page.waitForSelector("[class*='content']", new Page.WaitForSelectorOptions().setTimeout(10000));
 
@@ -186,8 +240,8 @@ public class CrawlerService {
             simulateUserScrolling(page);
 
             XhsContent content = new XhsContent();
-            content.setUrl(url);
-            content.setPostId(extractPostId(url));
+            content.setUrl(finalUrl);
+            content.setPostId(extractPostId(finalUrl));
             content.setCrawledAt(LocalDateTime.now());
             content.setCreatedAt(LocalDateTime.now());
             content.setUpdatedAt(LocalDateTime.now());
@@ -323,7 +377,7 @@ public class CrawlerService {
     }
 
     /**
-     * 提取图片URL
+     * 提取图片URL（过滤掉头像）
      */
     @SuppressWarnings("unchecked")
     private List<String> extractImageUrls(Page page, String selector) {
@@ -339,7 +393,11 @@ public class CrawlerService {
             if (result instanceof java.util.List) {
                 for (Object item : (java.util.List<?>) result) {
                     if (item != null) {
-                        urls.add(item.toString());
+                        String url = item.toString();
+                        // 过滤掉头像图片（包含/avatar/或/avatar）
+                        if (!url.contains("/avatar/") && !url.contains("avatar")) {
+                            urls.add(url);
+                        }
                     }
                 }
             }
