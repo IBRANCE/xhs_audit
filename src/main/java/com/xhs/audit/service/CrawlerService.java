@@ -133,6 +133,25 @@ public class CrawlerService {
             String realPostId = content.getPostId();
             log.info("[爬虫服务] 短链接已解析，获取真实postId: {} -> {}", postId, realPostId);
 
+            // 关键修复：检查真实postId是否已存在（可能通过标准链接已爬取过）
+            Optional<XhsContent> existingByPostId = contentRepository.findByPostId(realPostId);
+            if (existingByPostId.isPresent()) {
+                log.info("[爬虫服务] 真实postId已存在，复用已有记录: {}", realPostId);
+                XhsContent existing = existingByPostId.get();
+                // 更新URL为短链接（便于追溯来源）
+                existing.setUrl(url);
+                existing.setUpdatedAt(LocalDateTime.now());
+                contentRepository.save(existing);
+
+                // 更新Redis缓存
+                String newCacheKey = CONTENT_CACHE_PREFIX + realPostId;
+                if (redisTemplate != null) {
+                    updateRedisCache(newCacheKey, existing);
+                }
+
+                return existing;
+            }
+
             // 更新content的postId
             content.setPostId(realPostId);
 
