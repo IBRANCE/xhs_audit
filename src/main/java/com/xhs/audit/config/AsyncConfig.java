@@ -77,9 +77,10 @@ public class AsyncConfig {
     public Executor auditTaskExecutor() {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
 
-        // 线程池大小与浏览器池大小匹配，保证最多3个并发爬取任务
-        executor.setCorePoolSize(3);
-        executor.setMaxPoolSize(3);
+        // 线程池大小设为1，保证串行爬取，避免CDP冲突
+        // 每个Browser实例独立使用，串行执行CDP操作
+        executor.setCorePoolSize(1);
+        executor.setMaxPoolSize(1);
         executor.setQueueCapacity(100);
         executor.setThreadNamePrefix("audit-async-");
         executor.setKeepAliveSeconds(60);
@@ -88,8 +89,8 @@ public class AsyncConfig {
         executor.setAwaitTerminationSeconds(120);
 
         executor.initialize();
-        log.info("审核专用线程池已初始化: corePoolSize={}, maxPoolSize={} (与浏览器池大小匹配)",
-                3, 3);
+        log.info("审核专用线程池已初始化: corePoolSize={}, maxPoolSize={} (串行执行，避免CDP冲突)",
+                1, 1);
 
         return executor;
     }
