@@ -2,8 +2,6 @@ package com.xhs.audit.service;
 
 import java.time.LocalDateTime;
 import java.util.Optional;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -15,13 +13,15 @@ import com.xhs.audit.model.dto.AuditDecision;
 import com.xhs.audit.model.entity.AuditResult;
 import com.xhs.audit.model.entity.XhsContent;
 import com.xhs.audit.repository.AuditResultRepository;
+import com.xhs.audit.util.AuditResultConverter;
+import com.xhs.audit.util.PostIdExtractor;
 
 import lombok.extern.slf4j.Slf4j;
 
 /**
  * 审核业务服务
  * 整合爬虫、Agent审核、结果存储的完整流程
- * 
+ *
  * @author XHS Audit System
  * @since 2026-01-27
  */
@@ -37,11 +37,6 @@ public class ContentAuditService {
 
     @Autowired
     private AuditResultRepository auditResultRepository;
-
-    private static final Pattern POST_ID_PATTERN = Pattern.compile(
-            "/(explore|discovery/item)/([a-zA-Z0-9_-]+)");
-    private static final Pattern SHORT_LINK_PATTERN = Pattern.compile(
-            "xhslink\\.com/o/([a-zA-Z0-9]+)");
 
     /**
      * 爬取内容（流水线第一阶段）
@@ -150,19 +145,11 @@ public class ContentAuditService {
      * 提取postId
      */
     private String extractPostId(String url) {
-        // 先尝试标准链接
-        Matcher matcher = POST_ID_PATTERN.matcher(url);
-        if (matcher.find()) {
-            return matcher.group(2);
+        try {
+            return PostIdExtractor.extract(url);
+        } catch (IllegalArgumentException e) {
+            throw new BusinessException("ERR_INVALID_URL", "无法从URL中提取postId: " + url);
         }
-
-        // 短链接场景
-        Matcher shortMatcher = SHORT_LINK_PATTERN.matcher(url);
-        if (shortMatcher.find()) {
-            return "short_" + shortMatcher.group(1);
-        }
-
-        throw new BusinessException("ERR_INVALID_URL", "无法从URL中提取postId: " + url);
     }
 
     /**
@@ -174,7 +161,7 @@ public class ContentAuditService {
         result.setUrl(url);
         result.setJobId(jobId);  // 保存任务ID
         result.setAuditStatus(decision.getStatus());
-        result.setReasons(convertReasonsToList(decision.getReasons()));
+        result.setReasons(AuditResultConverter.reasonsToList(decision.getReasons()));
         result.setConfidenceScore(
                 decision.getConfidenceScore() != null
                         ? java.math.BigDecimal.valueOf(decision.getConfidenceScore())
@@ -190,15 +177,7 @@ public class ContentAuditService {
      * 转换AuditResult为AuditDecision
      */
     private AuditDecision convertToDecision(AuditResult result) {
-        return AuditDecision.builder()
-                .postId(result.getPostId())
-                .url(result.getUrl())
-                .status(result.getAuditStatus())
-                .reasons(convertListToReasons(result.getReasons()))
-                .confidenceScore(result.getConfidenceScore() != null ? result.getConfidenceScore().doubleValue() : 0.0)
-                .modelName(result.getModelName())
-                .auditedTime(result.getAuditedAt())
-                .build();
+        return AuditResultConverter.toDecision(result);
     }
 
     /**
@@ -206,19 +185,7 @@ public class ContentAuditService {
      */
     private java.util.List<java.util.Map<String, Object>> convertReasonsToList(
             java.util.List<AuditDecision.RejectReason> reasons) {
-        if (reasons == null || reasons.isEmpty()) {
-            return new java.util.ArrayList<>();
-        }
-
-        java.util.List<java.util.Map<String, Object>> list = new java.util.ArrayList<>();
-        for (AuditDecision.RejectReason reason : reasons) {
-            java.util.Map<String, Object> map = new java.util.HashMap<>();
-            map.put("dimension", reason.getDimension());
-            map.put("reason", reason.getReason());
-            map.put("severity", reason.getSeverity());
-            list.add(map);
-        }
-        return list;
+        return AuditResultConverter.reasonsToList(reasons);
     }
 
     /**
@@ -226,17 +193,6 @@ public class ContentAuditService {
      */
     private java.util.List<AuditDecision.RejectReason> convertListToReasons(
             java.util.List<java.util.Map<String, Object>> list) {
-        if (list == null || list.isEmpty()) {
-            return new java.util.ArrayList<>();
-        }
-
-        java.util.List<AuditDecision.RejectReason> reasons = new java.util.ArrayList<>();
-        for (java.util.Map<String, Object> map : list) {
-            reasons.add(new AuditDecision.RejectReason(
-                    (String) map.get("dimension"),
-                    (String) map.get("reason"),
-                    (String) map.get("severity")));
-        }
-        return reasons;
+        return AuditResultConverter.convertListToReasons(list);
     }
 }
