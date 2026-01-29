@@ -172,6 +172,10 @@ public class PlaywrightManager implements DisposableBean {
             try {
                 // 尝试访问 browser 确保存活
                 browser.contexts().size();
+                // 检查 page 是否仍然有效
+                if (page == null || page.isClosed()) {
+                    return false;
+                }
                 return failureCount.get() < MAX_FAILURES_THRESHOLD;
             } catch (Exception e) {
                 failureCount.incrementAndGet();
@@ -349,7 +353,11 @@ public class PlaywrightManager implements DisposableBean {
         BrowserInstance instance = findIdleInstance();
 
         if (instance != null) {
-            return new PageWrapper(instance.page, instance.context, instance, this);
+            // 检查page是否有效，如果无效则创建新的page
+            PageWrapper wrapper = ensurePageValid(instance);
+            if (wrapper != null) {
+                return wrapper;
+            }
         }
 
         // 2. 没有空闲实例，检查是否可创建新的
@@ -357,7 +365,10 @@ public class PlaywrightManager implements DisposableBean {
             synchronized (poolLock) {
                 instance = findIdleInstance();
                 if (instance != null) {
-                    return new PageWrapper(instance.page, instance.context, instance, this);
+                    PageWrapper wrapper = ensurePageValid(instance);
+                    if (wrapper != null) {
+                        return wrapper;
+                    }
                 }
 
                 // 创建新实例
@@ -372,6 +383,26 @@ public class PlaywrightManager implements DisposableBean {
 
         // 3. 所有实例都在使用中，进入等待队列
         return waitForAvailableInstance();
+    }
+
+    /**
+     * 确保实例的page有效，如果无效则创建新的page
+     */
+    private PageWrapper ensurePageValid(BrowserInstance instance) {
+        try {
+            // 检查page是否存在且未关闭
+            if (instance.page != null && !instance.page.isClosed()) {
+                return new PageWrapper(instance.page, instance.context, instance, this);
+            }
+
+            // page无效，创建新的page
+            log.debug("实例 {} 的page无效，创建新page", instance.id);
+            instance.page = instance.context.newPage();
+            return new PageWrapper(instance.page, instance.context, instance, this);
+        } catch (Exception e) {
+            log.warn("创建新page失败: {}", e.getMessage());
+            return null;
+        }
     }
 
     /**
@@ -451,7 +482,8 @@ public class PlaywrightManager implements DisposableBean {
 
             // 释放实例（回到池中）
             if (instance != null) {
-                instance.page = null; // 清除Page引用
+                // 不再清除Page引用，让isHealthy()检查页面状态
+                // 如果页面已关闭，isHealthy()会返回false
 
                 log.debug("释放浏览器实例: {}, 使用次数: {}",
                         instance.id, instance.usageCount.incrementAndGet());

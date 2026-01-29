@@ -44,7 +44,82 @@ public class ContentAuditService {
             "xhslink\\.com/o/([a-zA-Z0-9]+)");
 
     /**
-     * 审核单条小红书内容（完整流程）
+     * 爬取内容（流水线第一阶段）
+     * 从缓存或爬虫获取内容
+     *
+     * @param url          小红书链接
+     * @param forceRefresh 是否强制刷新（跳过缓存）
+     * @return 爬取的内容
+     */
+    @Transactional
+    public XhsContent crawlContent(String url, boolean forceRefresh) {
+        String postId = extractPostId(url);
+        log.info("[爬取阶段] 开始: url={}, postId={}, forceRefresh={}", url, postId, forceRefresh);
+
+        try {
+            XhsContent content = crawlerService.crawlContent(url);
+            if (content == null) {
+                throw new BusinessException("ERR_CRAWL_FAILED", "内容爬取失败: 返回内容为空");
+            }
+            log.info("[爬取阶段] 完成: postId={}, title={}", postId, content.getTitle());
+            return content;
+        } catch (IllegalArgumentException e) {
+            log.error("[爬取阶段] URL验证失败: {}", e.getMessage());
+            throw new BusinessException("ERR_INVALID_URL", "无效的URL: " + e.getMessage(), e);
+        } catch (RuntimeException e) {
+            log.error("[爬取阶段] 内容爬取失败: postId={}, error={}", postId, e.getMessage());
+            throw new BusinessException("ERR_CRAWL_FAILED",
+                    "内容爬取失败: " + e.getMessage() + "。请检查链接是否有效，或稍后重试", e);
+        } catch (Exception e) {
+            log.error("[爬取阶段] 异常: postId={}, error={}", postId, e.getMessage());
+            throw new BusinessException("ERR_CRAWL_FAILED", "内容爬取失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 审核内容（流水线第二阶段）
+     * 对已爬取的内容进行AI审核
+     *
+     * @param content 已爬取的内容
+     * @param jobId   任务ID（批量审核时传入，单条审核可为null）
+     * @return 审核决策
+     */
+    @Transactional
+    public AuditDecision auditContent(XhsContent content, String jobId) {
+        String postId = content.getPostId();
+        String url = content.getUrl();
+        log.info("[审核阶段] 开始: postId={}, url={}, jobId={}", postId, url, jobId);
+
+        try {
+            // 1. 检查是否已审核
+            log.debug("[审核阶段] 检查审核结果缓存: postId={}", postId);
+            Optional<AuditResult> existingResult = auditResultRepository.findFirstByPostIdOrderByAuditedAtDesc(postId);
+            if (existingResult.isPresent()) {
+                log.info("[审核阶段] 命中审核结果缓存，跳过重复审核: postId={}", postId);
+                return convertToDecision(existingResult.get());
+            }
+
+            // 2. Agent审核
+            log.info("[审核阶段] 调用ContentAuditAgent进行AI审核: postId={}", postId);
+            AuditDecision decision = contentAuditAgent.auditContent(content);
+            log.info("[审核阶段] Agent审核完成: postId={}, status={}, confidence={}",
+                    postId, decision.getStatus(), decision.getConfidenceScore());
+
+            // 3. 保存审核结果
+            log.debug("[审核阶段] 保存审核结果到数据库: postId={}, jobId={}", postId, jobId);
+            saveAuditResult(decision, url, jobId);
+
+            log.info("[审核阶段完成] postId={}, status={}, jobId={}", postId, decision.getStatus(), jobId);
+            return decision;
+
+        } catch (Exception e) {
+            log.error("[审核阶段] 失败: postId={}, url={}", postId, url, e);
+            throw new BusinessException("ERR_AUDIT_FAILED", "审核失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 审核单条小红书内容（完整流程，兼容旧接口）
      *
      * @param url          小红书链接
      * @param forceRefresh 是否强制刷新（跳过缓存）
@@ -56,52 +131,13 @@ public class ContentAuditService {
         try {
             log.info("[审核流程] 开始: url={}, forceRefresh={}, jobId={}", url, forceRefresh, jobId);
 
-            // 1. 提取postId
-            String postId = extractPostId(url);
-            log.debug("[审核流程] 提取PostID: {}", postId);
+            // 1. 爬取内容
+            XhsContent content = crawlContent(url, forceRefresh);
 
-            // 2. 检查是否已审核（非强制刷新时）
-            if (!forceRefresh) {
-                log.debug("[审核流程] 检查审核结果缓存: postId={}", postId);
-                Optional<AuditResult> existingResult = auditResultRepository.findFirstByPostIdOrderByAuditedAtDesc(postId);
-                if (existingResult.isPresent()) {
-                    log.info("[审核流程] 命中审核结果缓存，跳过重复审核: postId={}", postId);
-                    return convertToDecision(existingResult.get());
-                }
-                log.debug("[审核流程] 未命中审核结果缓存，继续处理");
-            }
+            // 2. 审核内容
+            AuditDecision decision = auditContent(content, jobId);
 
-            // 3. 爬取内容
-            log.info("[审核流程] 调用爬虫服务获取内容: postId={}", postId);
-            XhsContent content;
-            try {
-                content = crawlerService.crawlContent(url);
-                if (content == null) {
-                    throw new BusinessException("ERR_CRAWL_FAILED", "内容爬取失败: 返回内容为空");
-                }
-            } catch (IllegalArgumentException e) {
-                // URL验证失败
-                log.error("[审核流程] URL验证失败: {}", e.getMessage());
-                throw new BusinessException("ERR_INVALID_URL", "无效的URL: " + e.getMessage(), e);
-            } catch (RuntimeException e) {
-                // 爬取或验证失败
-                log.error("[审核流程] 内容爬取失败: postId={}, error={}", postId, e.getMessage());
-                throw new BusinessException("ERR_CRAWL_FAILED",
-                        "内容爬取失败: " + e.getMessage() + "。请检查链接是否有效，或稍后重试", e);
-            }
-            log.info("[审核流程] 内容获取成功: postId={}, title={}", postId, content.getTitle());
-
-            // 4. Agent审核
-            log.info("[审核流程] 调用ContentAuditAgent进行AI审核: postId={}", postId);
-            AuditDecision decision = contentAuditAgent.auditContent(content);
-            log.info("[审核流程] Agent审核完成: postId={}, status={}, confidence={}",
-                    postId, decision.getStatus(), decision.getConfidenceScore());
-
-            // 5. 保存审核结果
-            log.debug("[审核流程] 保存审核结果到数据库: postId={}, jobId={}", postId, jobId);
-            saveAuditResult(decision, url, jobId);
-
-            log.info("[审核流程完成] postId={}, status={}, jobId={}", postId, decision.getStatus(), jobId);
+            log.info("[审核流程完成] postId={}, status={}, jobId={}", content.getPostId(), decision.getStatus(), jobId);
             return decision;
 
         } catch (Exception e) {
