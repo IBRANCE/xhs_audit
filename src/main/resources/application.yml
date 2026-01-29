@@ -46,6 +46,7 @@ spring:
         model: ${OPENAI_CHAT_MODEL:qwen/qwen3-4b}
         temperature: 0.3
         max-tokens: 2000
+        think-enabled: ${OPENAI_CHAT_THINK_ENABLED:false}  # 文本模型是否开启思考模式，默认关闭
       vision:
         model: ${OPENAI_VISION_MODEL:zai-org/glm-4.6v-flash}
         temperature: 0.3

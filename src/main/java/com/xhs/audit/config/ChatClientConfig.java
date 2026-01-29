@@ -42,6 +42,9 @@ public class ChatClientConfig {
     @Value("${spring.ai.openai.chat.max-tokens:2000}")
     private Integer chatMaxTokens;
 
+    @Value("${spring.ai.openai.chat.think-enabled:false}")
+    private Boolean chatThinkEnabled;
+
     @Value("${spring.ai.openai.vision.model:gpt-4-vision-preview}")
     private String visionModel;
 

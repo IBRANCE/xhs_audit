@@ -71,6 +71,7 @@ public class ContentAuditAgent {
     private final AuditPromptConfig promptConfig;
     private final StringRedisTemplate redisTemplate;
     private final Duration imageCacheTtl;
+    private final boolean chatThinkEnabled;
 
     @Autowired
     public ContentAuditAgent(
@@ -79,6 +80,7 @@ public class ContentAuditAgent {
             @org.springframework.beans.factory.annotation.Value("${spring.ai.openai.vision.model:gpt-4-vision-preview}") String visionModel,
             @org.springframework.beans.factory.annotation.Value("${spring.ai.openai.base-url:https://api.openai.com}") String baseUrl,
             @org.springframework.beans.factory.annotation.Value("${spring.ai.openai.api-key}") String apiKey,
+            @org.springframework.beans.factory.annotation.Value("${spring.ai.openai.chat.think-enabled:false}") boolean chatThinkEnabled,
             AuditPromptConfig promptConfig,
             StringRedisTemplate redisTemplate,
             @Value("${audit.image-cache-ttl-hours:24}") int imageCacheTtlHours) {
@@ -87,6 +89,7 @@ public class ContentAuditAgent {
         this.visionModel = visionModel;
         this.baseUrl = baseUrl;
         this.apiKey = apiKey;
+        this.chatThinkEnabled = chatThinkEnabled;
         this.promptConfig = promptConfig;
         this.redisTemplate = redisTemplate;
         this.imageCacheTtl = Duration.ofHours(imageCacheTtlHours);
@@ -101,6 +104,7 @@ public class ContentAuditAgent {
 
         log.info("ContentAuditAgent初始化完成，视觉模型: {}, Base URL: {}", visionModel, baseUrl);
         log.info("图片缓存过期时间: {}小时", imageCacheTtlHours);
+        log.info("文本模型思考模式: {}", chatThinkEnabled ? "开启" : "关闭");
     }
 
     /**
@@ -152,7 +156,13 @@ public class ContentAuditAgent {
                 throw new RuntimeException("文本审核 System Prompt 未配置");
             }
 
+            // 如果思考模式关闭，添加 /no_think 后缀
             String userMessageText = systemPrompt + "\n\n" + buildUserMessage(content);
+            if (!chatThinkEnabled) {
+                userMessageText = userMessageText + " /no_think";
+                log.debug("[Agent审核] 思考模式关闭，添加 /no_think 后缀");
+            }
+
             log.info("[Agent审核] 执行文本审核");
 
             String responseText = textChatClient.prompt()
