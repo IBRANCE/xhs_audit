@@ -85,4 +85,28 @@ public class FileUploadController {
                                 .headers(headers)
                                 .body(excelBytes);
         }
+
+        /**
+         * GET /api/v1/audit/template - 下载导入模板
+         */
+        @GetMapping("/template")
+        @Operation(summary = "下载导入模板", description = "下载Excel批量审核导入模板文件")
+        public ResponseEntity<byte[]> downloadTemplate() {
+                log.info("收到导入模板下载请求");
+
+                byte[] templateBytes = excelAuditService.downloadTemplate();
+
+                String filename = "audit_import_template.xlsx";
+                String encodedFilename = URLEncoder.encode(filename, StandardCharsets.UTF_8)
+                                .replaceAll("\\+", "%20");
+
+                HttpHeaders headers = new HttpHeaders();
+                headers.setContentType(MediaType.APPLICATION_OCTET_STREAM);
+                headers.setContentDispositionFormData("attachment", encodedFilename);
+                headers.add("Access-Control-Expose-Headers", "Content-Disposition");
+
+                return ResponseEntity.ok()
+                                .headers(headers)
+                                .body(templateBytes);
+        }
 }

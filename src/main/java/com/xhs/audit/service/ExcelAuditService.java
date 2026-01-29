@@ -14,9 +14,21 @@ import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import org.apache.poi.ss.usermodel.*;
+import org.apache.poi.ss.usermodel.BorderStyle;
+import org.apache.poi.ss.usermodel.Cell;
+import org.apache.poi.ss.usermodel.CellStyle;
+import org.apache.poi.ss.usermodel.FillPatternType;
+import org.apache.poi.ss.usermodel.Font;
+import org.apache.poi.ss.usermodel.HorizontalAlignment;
+import org.apache.poi.ss.usermodel.IndexedColors;
+import org.apache.poi.ss.usermodel.Row;
+import org.apache.poi.ss.usermodel.Sheet;
+import org.apache.poi.ss.usermodel.VerticalAlignment;
+import org.apache.poi.ss.usermodel.Workbook;
+import org.apache.poi.ss.usermodel.WorkbookFactory;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -48,12 +60,12 @@ public class ExcelAuditService {
     @Autowired
     private AsyncAuditService asyncAuditService;
 
-    // 小红书链接正则表达式
+    // 小红书链接正则表达式 - 支持标准链接、短链接和查询参数
     private static final Pattern URL_PATTERN = Pattern.compile(
-            "https?://(?:www\\.|m\\.)?(?:xiaohongshu\\.com/explore/[a-zA-Z0-9_-]+|xhs\\.com/[a-zA-Z0-9_-]+)");
+            "https?://(?:www\\.|m\\.)?(?:xiaohongshu\\.com/(?:explore|discovery/item)/[a-zA-Z0-9_-]+|xhs\\.com/[a-zA-Z0-9_-]+|xhslink\\.com/o/[a-zA-Z0-9]+)(?:\\?[^\\s\"\']*)?");
 
     private static final Pattern POST_ID_PATTERN = Pattern.compile(
-            "/explore/([a-zA-Z0-9_-]+)");
+            "/(?:explore|discovery/item)/([a-zA-Z0-9_-]+)");
 
     private static final long MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
 
@@ -65,22 +77,24 @@ public class ExcelAuditService {
      */
     public String processExcelUpload(MultipartFile file) {
         try {
-            log.info("开始处理Excel上传: filename={}, size={}",
+            log.info("[同步阶段] 开始处理Excel上传: filename={}, size={}",
                     file.getOriginalFilename(), file.getSize());
 
             // 1. 验证文件
             validateFile(file);
 
             // 2. 解析Excel，提取链接
+            log.info("[同步阶段] Apache POI解析Excel，提取小红书链接...");
             List<String> urls = extractUrlsFromExcel(file.getInputStream());
 
             if (urls.isEmpty()) {
                 throw new BusinessException("ERR_NO_VALID_LINKS", "Excel中未找到有效的小红书链接");
             }
+            log.info("[同步阶段] Excel解析完成: 提取到{}条链接", urls.size());
 
             // 3. 去重
             Set<String> uniqueUrls = new LinkedHashSet<>(urls);
-            log.info("链接去重: 原始{}条, 去重后{}条", urls.size(), uniqueUrls.size());
+            log.info("[同步阶段] 链接验证与去重: 原始{}条, 去重后{}条", urls.size(), uniqueUrls.size());
 
             // 4. 创建审核任务
             String jobId = generateJobId();
@@ -96,11 +110,13 @@ public class ExcelAuditService {
             job.setUpdatedAt(LocalDateTime.now());
 
             auditJobRepository.save(job);
-            log.info("审核任务已创建: jobId={}, totalLinks={}", jobId, uniqueUrls.size());
+            log.info("[同步阶段] 创建审核任务: jobId={}, status=PENDING, totalLinks={}", jobId, uniqueUrls.size());
 
             // 5. 提交异步任务
+            log.info("[同步阶段] 提交后台异步任务: jobId={}", jobId);
             asyncAuditService.processAuditJob(jobId, new ArrayList<>(uniqueUrls));
 
+            log.info("[同步阶段完成] 返回jobId给用户: {}, 用户无需等待，可通过jobId查询进度", jobId);
             return jobId;
 
         } catch (IOException e) {
@@ -232,7 +248,7 @@ public class ExcelAuditService {
 
                 // 创建标题行
                 Row headerRow = sheet.createRow(0);
-                String[] headers = { "序号", "链接", "审核状态", "驳回原因", "置信度", "审核时间" };
+                String[] headers = { "序号", "链接", "审核状态", "车型要求", "内容类型", "话题标签", "内容态度", "图片要求", "置信度", "审核时间" };
                 for (int i = 0; i < headers.length; i++) {
                     Cell cell = headerRow.createCell(i);
                     cell.setCellValue(headers[i]);
@@ -274,30 +290,52 @@ public class ExcelAuditService {
                     cell2.setCellStyle("PASSED".equals(result.getAuditStatus()) ? passStyle
                             : "REJECTED".equals(result.getAuditStatus()) ? rejectStyle : dataStyle);
 
-                    // 驳回原因
+                    // 提取各类型驳回原因
+                    Map<String, String> reasonsMap = parseReasonsByType(result.getReasons());
+
+                    // 车型要求
                     Cell cell3 = dataRow.createCell(3);
-                    String reasonText = formatReasons(result.getReasons());
-                    cell3.setCellValue(reasonText);
+                    cell3.setCellValue(reasonsMap.getOrDefault("car_model", ""));
                     cell3.setCellStyle(dataStyle);
 
-                    // 置信度
+                    // 内容类型
                     Cell cell4 = dataRow.createCell(4);
-                    if (result.getConfidenceScore() != null) {
-                        cell4.setCellValue(result.getConfidenceScore().doubleValue());
-                    } else {
-                        cell4.setCellValue("-");
-                    }
+                    cell4.setCellValue(reasonsMap.getOrDefault("content_type", ""));
                     cell4.setCellStyle(dataStyle);
 
-                    // 审核时间
+                    // 话题标签
                     Cell cell5 = dataRow.createCell(5);
+                    cell5.setCellValue(reasonsMap.getOrDefault("tag", ""));
+                    cell5.setCellStyle(dataStyle);
+
+                    // 内容态度
+                    Cell cell6 = dataRow.createCell(6);
+                    cell6.setCellValue(reasonsMap.getOrDefault("attitude", ""));
+                    cell6.setCellStyle(dataStyle);
+
+                    // 图片要求
+                    Cell cell7 = dataRow.createCell(7);
+                    cell7.setCellValue(reasonsMap.getOrDefault("image", ""));
+                    cell7.setCellStyle(dataStyle);
+
+                    // 置信度
+                    Cell cell8 = dataRow.createCell(8);
+                    if (result.getConfidenceScore() != null) {
+                        cell8.setCellValue(result.getConfidenceScore().doubleValue());
+                    } else {
+                        cell8.setCellValue("-");
+                    }
+                    cell8.setCellStyle(dataStyle);
+
+                    // 审核时间
+                    Cell cell9 = dataRow.createCell(9);
                     if (result.getAuditedAt() != null) {
                         DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
-                        cell5.setCellValue(result.getAuditedAt().format(formatter));
+                        cell9.setCellValue(result.getAuditedAt().format(formatter));
                     } else {
-                        cell5.setCellValue("-");
+                        cell9.setCellValue("-");
                     }
-                    cell5.setCellStyle(dataStyle);
+                    cell9.setCellStyle(dataStyle);
                 }
 
                 // 自动调整列宽
@@ -402,5 +440,127 @@ public class ExcelAuditService {
             sb.append(reason.get("dimension")).append(": ").append(reason.get("reason"));
         }
         return sb.toString();
+    }
+
+    /**
+     * 按类型解析驳回原因
+     */
+    private Map<String, String> parseReasonsByType(List<Map<String, Object>> reasons) {
+        Map<String, String> result = new java.util.HashMap<>();
+        result.put("car_model", "");
+        result.put("content_type", "");
+        result.put("tag", "");
+        result.put("attitude", "");
+        result.put("image", "");
+
+        if (reasons == null || reasons.isEmpty()) {
+            return result;
+        }
+
+        for (Map<String, Object> reason : reasons) {
+            Object dimensionObj = reason.get("dimension");
+            Object reasonObj = reason.get("reason");
+
+            if (dimensionObj == null) continue;
+
+            String dimension = dimensionObj.toString();
+            String reasonText = reasonObj != null ? reasonObj.toString() : "";
+
+            switch (dimension) {
+                case "car_model" -> result.put("car_model", reasonText);
+                case "content_type" -> result.put("content_type", reasonText);
+                case "tag" -> result.put("tag", reasonText);
+                case "attitude" -> result.put("attitude", reasonText);
+                case "image" -> result.put("image", reasonText);
+            }
+        }
+
+        return result;
+    }
+
+    /**
+     * 下载导入模板
+     *
+     * @return Excel模板字节数组
+     */
+    public byte[] downloadTemplate() {
+        log.info("生成导入模板文件");
+
+        try (Workbook workbook = new XSSFWorkbook()) {
+            Sheet sheet = workbook.createSheet("小红书链接");
+
+            // 创建标题样式
+            CellStyle headerStyle = createHeaderStyle(workbook);
+            CellStyle tipStyle = createTipStyle(workbook);
+            CellStyle dataStyle = createDataStyle(workbook);
+
+            // 第1行：标题
+            Row titleRow = sheet.createRow(0);
+            Cell titleCell = titleRow.createCell(0);
+            titleCell.setCellValue("小红书内容批量审核导入模板");
+            titleCell.setCellStyle(headerStyle);
+            sheet.addMergedRegion(new org.apache.poi.ss.util.CellRangeAddress(0, 0, 0, 2)); // 合并A到C列
+
+            // 第2行：提示
+            Row tipRow = sheet.createRow(1);
+            Cell tipCell = tipRow.createCell(0);
+            tipCell.setCellValue("请在下方填写需要审核的小红书链接，支持标准链接和短链接");
+            tipCell.setCellStyle(tipStyle);
+            sheet.addMergedRegion(new org.apache.poi.ss.util.CellRangeAddress(1, 1, 0, 2));
+
+            // 第4行：表头
+            Row headerRow = sheet.createRow(3);
+            String[] headers = { "序号", "小红书链接", "备注(可选)" };
+            for (int i = 0; i < headers.length; i++) {
+                Cell cell = headerRow.createCell(i);
+                cell.setCellValue(headers[i]);
+                cell.setCellStyle(headerStyle);
+            }
+
+            // 示例数据行（第5-7行）
+            String[][] examples = {
+                { "1", "https://www.xiaohongshu.com/explore/6970bf6f000000000e03ce88", "示例：标准链接" },
+                { "2", "https://www.xiaohongshu.com/discovery/item/abc123def456", "示例：另一种格式" },
+                { "3", "https://xhslink.com/o/uEBlswi8i6", "示例：短链接" }
+            };
+
+            for (int i = 0; i < examples.length; i++) {
+                Row dataRow = sheet.createRow(4 + i);
+                for (int j = 0; j < examples[i].length; j++) {
+                    Cell cell = dataRow.createCell(j);
+                    cell.setCellValue(examples[i][j]);
+                    cell.setCellStyle(dataStyle);
+                }
+            }
+
+            // 设置列宽
+            sheet.setColumnWidth(0, 10 * 256);  // 序号
+            sheet.setColumnWidth(1, 60 * 256);  // 链接
+            sheet.setColumnWidth(2, 25 * 256);  // 备注
+
+            // 写入字节数组
+            ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+            workbook.write(outputStream);
+
+            log.info("导入模板生成完成");
+            return outputStream.toByteArray();
+
+        } catch (IOException e) {
+            log.error("导入模板生成失败", e);
+            throw new BusinessException("ERR_TEMPLATE_GEN_FAILED", "模板生成失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 创建提示样式
+     */
+    private CellStyle createTipStyle(Workbook workbook) {
+        CellStyle style = workbook.createCellStyle();
+        Font font = workbook.createFont();
+        font.setFontHeightInPoints((short) 10);
+        font.setItalic(true);
+        style.setFont(font);
+        style.setAlignment(HorizontalAlignment.LEFT);
+        return style;
     }
 }

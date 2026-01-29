@@ -1,25 +1,46 @@
 package com.xhs.audit.agent;
 
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.net.MalformedURLException;
+import java.net.URL;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
 
-import org.springframework.ai.chat.ChatResponse;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.UserMessage;
-import org.springframework.ai.chat.prompt.Prompt;
-import org.springframework.ai.openai.OpenAiChatClient;
-import org.springframework.ai.openai.OpenAiChatOptions;
+import javax.imageio.ImageIO;
+
+import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
+import org.springframework.web.client.RestTemplate;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
-
+import com.xhs.audit.config.AuditPromptConfig;
 import com.xhs.audit.model.dto.AuditDecision;
 import com.xhs.audit.model.entity.XhsContent;
 
 import lombok.extern.slf4j.Slf4j;
+
+import java.time.Duration;
 
 /**
  * 内容审核Agent
@@ -40,123 +61,171 @@ import lombok.extern.slf4j.Slf4j;
 @Component
 public class ContentAuditAgent {
 
-    private final OpenAiChatClient chatClient;
+    private final ChatClient textChatClient;
     private final ObjectMapper objectMapper;
+    private final Executor auditExecutor;
+    private final String visionModel;
+    private final String baseUrl;
+    private final String apiKey;
+    private final RestTemplate visionRestTemplate;
+    private final AuditPromptConfig promptConfig;
+    private final StringRedisTemplate redisTemplate;
+    private final Duration imageCacheTtl;
+    private final boolean chatThinkEnabled;
 
     @Autowired
-    public ContentAuditAgent(OpenAiChatClient chatClient) {
-        this.chatClient = chatClient;
+    public ContentAuditAgent(
+            @org.springframework.beans.factory.annotation.Qualifier("textChatClient") ChatClient textChatClient,
+            @org.springframework.beans.factory.annotation.Qualifier("auditTaskExecutor") Executor auditExecutor,
+            @org.springframework.beans.factory.annotation.Value("${spring.ai.openai.vision.model:gpt-4-vision-preview}") String visionModel,
+            @org.springframework.beans.factory.annotation.Value("${spring.ai.openai.base-url:https://api.openai.com}") String baseUrl,
+            @org.springframework.beans.factory.annotation.Value("${spring.ai.openai.api-key}") String apiKey,
+            @org.springframework.beans.factory.annotation.Value("${spring.ai.openai.chat.think-enabled:false}") boolean chatThinkEnabled,
+            AuditPromptConfig promptConfig,
+            StringRedisTemplate redisTemplate,
+            @Value("${audit.image-cache-ttl-hours:24}") int imageCacheTtlHours) {
+        this.textChatClient = textChatClient;
+        this.auditExecutor = auditExecutor;
+        this.visionModel = visionModel;
+        this.baseUrl = baseUrl;
+        this.apiKey = apiKey;
+        this.chatThinkEnabled = chatThinkEnabled;
+        this.promptConfig = promptConfig;
+        this.redisTemplate = redisTemplate;
+        this.imageCacheTtl = Duration.ofHours(imageCacheTtlHours);
         this.objectMapper = new ObjectMapper();
         this.objectMapper.registerModule(new JavaTimeModule());
 
-        log.info("ContentAuditAgent初始化完成，使用OpenAiChatClient");
+        this.visionRestTemplate = new RestTemplate();
+        org.springframework.http.client.HttpComponentsClientHttpRequestFactory factory =
+            new org.springframework.http.client.HttpComponentsClientHttpRequestFactory();
+        factory.setConnectTimeout(30000);
+        visionRestTemplate.setRequestFactory(factory);
+
+        log.info("ContentAuditAgent初始化完成，视觉模型: {}, Base URL: {}", visionModel, baseUrl);
+        log.info("图片缓存过期时间: {}小时", imageCacheTtlHours);
+        log.info("文本模型思考模式: {}", chatThinkEnabled ? "开启" : "关闭");
     }
 
     /**
-     * 审核单个小红书内容
-     * 
+     * 审核单个小红书内容 - 并行处理文本和图片
+     *
      * @param content 爬取的小红书内容
      * @return 审核决策
      */
     public AuditDecision auditContent(XhsContent content) {
         try {
-            log.info("开始审核内容: postId={}, url={}", content.getPostId(), content.getUrl());
+            log.info("[Agent审核] 开始AI审核: postId={}, title={}", content.getPostId(), content.getTitle());
 
-            // 1. 构建User Message
-            String userMessageText = buildSystemPrompt() + "\n\n" + buildUserMessage(content);
-            Message userMessage = new UserMessage(userMessageText);
+            // 并行执行文本审核和图片审核
+            CompletableFuture<String> textFuture = CompletableFuture.supplyAsync(
+                    () -> auditTextContent(content), auditExecutor);
+            CompletableFuture<String> imageFuture = CompletableFuture.supplyAsync(
+                    () -> auditImages(content), auditExecutor);
 
-            // 2. 配置OpenAI选项
-            OpenAiChatOptions options = OpenAiChatOptions.builder()
-                    .withModel("gpt-4")
-                    .withTemperature(0.3f)
-                    .withMaxTokens(2000)
-                    .build();
+            // 等待两个任务完成
+            log.info("[Agent审核] 并行执行文本审核和图片审核...");
+            String textResult = textFuture.get(60, TimeUnit.SECONDS);
+            String imageResult = imageFuture.get(60, TimeUnit.SECONDS);
 
-            // 3. 调用LLM
-            Prompt prompt = new Prompt(List.of(userMessage), options);
-            ChatResponse response = chatClient.call(prompt);
-            String responseText = response.getResult().getOutput().getContent();
+            // 构建决策
+            AuditDecision decision = buildDecisionFromResults(content, textResult, imageResult);
 
-            log.debug("LLM原始响应: {}", responseText);
-
-            // 4. 解析JSON为AuditDecision对象
-            AuditDecision decision = parseDecision(responseText);
-
-            // 5. 补充元数据
-            decision.setPostId(content.getPostId());
-            decision.setUrl(content.getUrl());
-            decision.setAuditedTime(LocalDateTime.now());
-            if (decision.getModelName() == null) {
-                decision.setModelName("gpt-4");
-            }
-
-            log.info("审核完成: postId={}, status={}, confidence={}",
-                    content.getPostId(), decision.getStatus(), decision.getConfidenceScore());
+            log.info("[Agent审核完成] postId={}, status={}, confidence={}, riskLevel={}",
+                    content.getPostId(), decision.getStatus(), decision.getConfidenceScore(),
+                    decision.getRiskLevel());
 
             return decision;
 
         } catch (Exception e) {
-            log.error("审核失败: postId={}, error={}", content.getPostId(), e.getMessage(), e);
-            // 返回UNCERTAIN决策
+            log.error("[Agent审核失败] postId={}, error={}", content.getPostId(), e.getMessage(), e);
             return AuditDecision.uncertain(content.getPostId(),
                     "审核异常: " + e.getMessage());
         }
     }
 
     /**
-     * 构建System Prompt
+     * 文本内容审核
      */
-    private String buildSystemPrompt() {
-        return """
-                你是一个专业的小红书内容审核专家。你的职责是评估用户上传的小红书帖子是否合规。
+    private String auditTextContent(XhsContent content) {
+        try {
+            // 使用配置的 System Prompt
+            String systemPrompt = promptConfig.getTextSystem();
+            if (systemPrompt == null || systemPrompt.isEmpty()) {
+                log.error("[Agent审核] 文本审核 System Prompt 未配置");
+                throw new RuntimeException("文本审核 System Prompt 未配置");
+            }
 
-                【审核维度】（按优先级排序）：
-                1. 标题审核 - 检查标题长度、敏感词、违规表述、诱导点击
-                2. 内容审核 - 检查正文中的敏感词、政治敏感、虚假宣传、隐性营销
-                3. Tag审核 - 检查标签合规性、是否过度标签堆砌、是否偏离主题
-                4. 图片审核 - 检查图片数量、URL有效性
+            // 如果思考模式关闭，添加 /no_think 后缀
+            String userMessageText = systemPrompt + "\n\n" + buildUserMessage(content);
+            if (!chatThinkEnabled) {
+                userMessageText = userMessageText + " /no_think";
+                log.debug("[Agent审核] 思考模式关闭，添加 /no_think 后缀");
+            }
 
-                【可用工具】：
-                1. getAuditRules(dimension) - 获取审核规则，dimension可选: title/content/tag/image/all
-                2. checkSensitiveWords(text) - 检查文本中的敏感词
-                3. analyzeContent(title, content, tags) - 深度语义分析，识别隐性违规
+            log.info("[Agent审核] 执行文本审核");
 
-                【审核步骤】：
-                第1步：调用 getAuditRules("all") 获取所有审核规则
-                第2步：依次对标题、内容、标签调用 checkSensitiveWords 检查敏感词
-                第3步：调用 analyzeContent 进行深度语义分析
-                第4步：根据规则和工具返回结果，综合判断内容是否合规
-                第5步：如果置信度 < 0.7，标记为UNCERTAIN
-                第6步：生成最终决策，必须返回JSON格式
+            String responseText = textChatClient.prompt()
+                    .user(userMessageText)
+                    .call()
+                    .content();
 
-                【决策标准】：
-                - PASSED（通过）: 所有维度均无违规，置信度 >= 0.8
-                - REJECTED（驳回）: 至少一个维度存在明确违规
-                - UNCERTAIN（不确定）: 置信度 < 0.7，或需要人工复核
+            log.info("[Agent审核] 文本审核完成");
+            return responseText;
+        } catch (Exception e) {
+            log.error("[Agent审核] 文本审核失败: {}", e.getMessage());
+            return "{\"status\":\"UNCERTAIN\",\"reasons\":[{\"dimension\":\"text\",\"reason\":\"" + e.getMessage() + "\",\"severity\":\"MEDIUM\"}]}";
+        }
+    }
 
-                【输出格式】（严格JSON）：
-                {
-                  "status": "PASSED|REJECTED|UNCERTAIN",
-                  "reasons": [
-                    {
-                      "dimension": "title|content|tag|image",
-                      "reason": "具体原因",
-                      "severity": "LOW|MEDIUM|HIGH|CRITICAL"
-                    }
-                  ],
-                  "confidenceScore": 0.95,
-                  "suggestedAction": "通过|驳回|人工复核",
-                  "riskLevel": "LOW|MEDIUM|HIGH|CRITICAL",
-                  "modelName": "gpt-4-turbo"
+    /**
+     * 根据并行结果构建决策
+     */
+    private AuditDecision buildDecisionFromResults(XhsContent content, String textResult, String imageResult) {
+        log.info("[Agent审核] 文本审核结果: {}", textResult);
+
+        AuditDecision decision = parseDecision(textResult);
+        decision.setPostId(content.getPostId());
+        decision.setUrl(content.getUrl());
+        decision.setAuditedTime(LocalDateTime.now());
+
+        // 合并图片审核结果
+        if (imageResult != null && !imageResult.contains("无有效图片") && !imageResult.contains("异常")) {
+            log.info("[Agent审核] 图片审核结果: {}", imageResult);
+
+            // 使用配置的关键词判断图片是否通过
+            String passKeywords = promptConfig.getImagePassKeywords();
+            if (passKeywords == null || passKeywords.isEmpty()) {
+                passKeywords = "是";
+            }
+
+            // 如果图片审核结果不包含通过关键词，添加到原因中
+            if (!imageResult.contains(passKeywords)) {
+                if (decision.getReasons() == null) {
+                    decision.setReasons(new java.util.ArrayList<>());
                 }
+                decision.getReasons().add(new AuditDecision.RejectReason("image", "图片不符合要求: " + imageResult, "MEDIUM"));
+            }
+        } else {
+            log.info("[Agent审核] 图片审核结果: 无有效图片或异常");
+        }
 
-                【注意事项】：
-                1. 必须调用工具获取数据，不要凭空猜测
-                2. 敏感词匹配必须准确，避免误判
-                3. 对于边界case，宁可标记UNCERTAIN交由人工
-                4. 严格按照JSON格式返回结果，不要添加额外说明
-                """;
+        // 打印汇总后的审核结果
+        log.info("[Agent审核] ===== 最终审核结果 =====");
+        log.info("[Agent审核] postId: {}", content.getPostId());
+        log.info("[Agent审核] 状态: {}", decision.getStatus());
+        log.info("[Agent审核] 置信度: {}", decision.getConfidenceScore());
+        log.info("[Agent审核] 风险等级: {}", decision.getRiskLevel());
+        log.info("[Agent审核] 建议操作: {}", decision.getSuggestedAction());
+        if (decision.getReasons() != null && !decision.getReasons().isEmpty()) {
+            log.info("[Agent审核] 驳回原因:");
+            for (AuditDecision.RejectReason reason : decision.getReasons()) {
+                log.info("[Agent审核]   - [{}] {} (severity: {})", reason.getDimension(), reason.getReason(), reason.getSeverity());
+            }
+        }
+        log.info("[Agent审核] ========================");
+
+        return decision;
     }
 
     /**
@@ -245,5 +314,233 @@ public class ContentAuditAgent {
         }
 
         return text.trim();
+    }
+
+    /**
+     * 使用视觉模型审核图片内容 - 直接使用 RestTemplate 调用
+     *
+     * @param content 包含图片的内容
+     * @return 图片审核结果描述
+     */
+    private String auditImages(XhsContent content) {
+        try {
+            if (content.getImages() == null || content.getImages().isEmpty()) {
+                return null;
+            }
+
+            log.info("[图片审核] 开始审核图片: postId={}, imageCount={}",
+                    content.getPostId(), content.getImages().size());
+
+            // 使用配置的提示词
+            String textPrompt = promptConfig.getTextImage();
+            if (textPrompt == null || textPrompt.isEmpty()) {
+                textPrompt = "请识别这张图片中是否是日产系车型，回复：是/否";
+                log.warn("[图片审核] 提示词未配置，使用默认提示词");
+            }
+
+            // 只处理第一张图片
+            String imageUrl = content.getImages().get(0);
+            log.info("[图片审核] 处理图片: {}", imageUrl);
+
+            // 下载并压缩图片
+            byte[] compressedBytes = downloadAndCompressImage(imageUrl);
+            if (compressedBytes == null) {
+                return "图片下载失败";
+            }
+
+            String mimeType = detectMimeType(compressedBytes);
+            String base64Data = Base64.getEncoder().encodeToString(compressedBytes);
+            String dataUrl = "data:" + mimeType + ";base64," + base64Data;
+            log.info("[图片审核] 图片大小: {} bytes, base64长度: {}", compressedBytes.length, base64Data.length());
+            log.debug("[图片审核] Base64数据: {}", base64Data);
+
+            // 构建 OpenAI 格式的请求体
+            Map<String, Object> requestBody = new HashMap<>();
+            requestBody.put("model", visionModel);
+
+            // 构建消息内容（数组格式）
+            List<Map<String, Object>> contentList = new ArrayList<>();
+
+            // 文本内容
+            Map<String, Object> textContent = new HashMap<>();
+            textContent.put("type", "text");
+            textContent.put("text", textPrompt);
+            contentList.add(textContent);
+
+            // 图片内容
+            Map<String, Object> imageContent = new HashMap<>();
+            imageContent.put("type", "image_url");
+            Map<String, Object> imageUrlObj = new HashMap<>();
+            imageUrlObj.put("url", dataUrl);
+            imageContent.put("image_url", imageUrlObj);
+            contentList.add(imageContent);
+
+            // 构建消息
+            List<Map<String, Object>> messages = new ArrayList<>();
+            Map<String, Object> message = new HashMap<>();
+            message.put("role", "user");
+            message.put("content", contentList);
+            messages.add(message);
+
+            requestBody.put("messages", messages);
+            requestBody.put("temperature", 0.3);
+            requestBody.put("max_tokens", 100);
+
+            // 构建请求URL（确保末尾有 /v1）
+            String apiUrl = baseUrl;
+            if (!apiUrl.endsWith("/v1")) {
+                apiUrl = apiUrl + "/v1";
+            }
+            apiUrl = apiUrl + "/chat/completions";
+
+            log.info("[图片审核] 调用API: {}", apiUrl);
+
+            // 设置请求头
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_JSON);
+            headers.setBearerAuth(apiKey);
+
+            HttpEntity<Map<String, Object>> entity = new HttpEntity<>(requestBody, headers);
+
+            // 发送请求
+            ResponseEntity<String> response = visionRestTemplate.exchange(
+                    apiUrl,
+                    HttpMethod.POST,
+                    entity,
+                    String.class
+            );
+
+            // 解析响应
+            String result = "";
+            if (response.getBody() != null) {
+                JsonNode root = objectMapper.readTree(response.getBody());
+                JsonNode choices = root.path("choices");
+                if (choices.isArray() && !choices.isEmpty()) {
+                    JsonNode choice = choices.get(0);
+                    JsonNode messageNode = choice.path("message");
+                    result = messageNode.path("content").asText();
+                }
+            }
+
+            log.info("[图片审核] 视觉模型返回: {}", result);
+            return result;
+
+        } catch (Exception e) {
+            log.error("[图片审核失败] postId={}, error={}", content.getPostId(), e.getMessage(), e);
+            return "图片审核异常: " + e.getMessage();
+        }
+    }
+
+    /**
+     * 下载并压缩图片（带Redis缓存）
+     * @param imageUrl 图片URL
+     * @return 压缩后的图片字节数组
+     */
+    private byte[] downloadAndCompressImage(String imageUrl) {
+        try {
+            // 1. 先检查Redis缓存
+            String cacheKey = "img:base64:" + Integer.toHexString(imageUrl.hashCode());
+            String cachedBase64 = redisTemplate.opsForValue().get(cacheKey);
+
+            if (cachedBase64 != null && !cachedBase64.isEmpty()) {
+                log.info("[图片审核] 缓存命中: {}, 长度: {}", imageUrl, cachedBase64.length());
+                byte[] cachedBytes = Base64.getDecoder().decode(cachedBase64);
+                log.info("[图片审核] 使用缓存图片: {} bytes", cachedBytes.length);
+                return cachedBytes;
+            }
+
+            log.info("[图片审核] 缓存未命中，下载图片: {}", imageUrl);
+
+            // 2. 下载图片
+            RestTemplate restTemplate = new RestTemplate();
+            byte[] originalBytes = restTemplate.getForObject(imageUrl, byte[].class);
+
+            if (originalBytes == null || originalBytes.length == 0) {
+                return null;
+            }
+
+            log.info("[图片审核] 原始图片大小: {} bytes", originalBytes.length);
+
+            // 3. 压缩图片
+            byte[] compressedBytes = compressImage(originalBytes);
+            if (compressedBytes == null) {
+                return null;
+            }
+
+            // 4. 存入Redis缓存
+            String base64Data = Base64.getEncoder().encodeToString(compressedBytes);
+            try {
+                redisTemplate.opsForValue().set(cacheKey, base64Data, imageCacheTtl);
+                log.info("[图片审核] 图片已缓存: {}, 长度: {}", cacheKey, base64Data.length());
+            } catch (Exception e) {
+                log.warn("[图片审核] 缓存写入失败: {}", e.getMessage());
+            }
+
+            return compressedBytes;
+
+        } catch (Exception e) {
+            log.warn("[图片审核] 图片处理失败: {}, error: {}", imageUrl, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * 压缩图片到指定尺寸
+     */
+    private byte[] compressImage(byte[] originalBytes) {
+        try {
+            BufferedImage originalImage = ImageIO.read(new java.io.ByteArrayInputStream(originalBytes));
+            if (originalImage == null) {
+                return originalBytes;
+            }
+
+            // 压缩到最大 128 像素
+            int maxDimension = 128;
+            int width = originalImage.getWidth();
+            int height = originalImage.getHeight();
+
+            if (width > maxDimension || height > maxDimension) {
+                double scale = Math.min((double) maxDimension / width, (double) maxDimension / height);
+                width = (int) (width * scale);
+                height = (int) (height * scale);
+            }
+
+            BufferedImage resizedImage = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+            resizedImage.getGraphics().drawImage(originalImage.getScaledInstance(width, height, java.awt.Image.SCALE_SMOOTH), 0, 0, null);
+
+            ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+            ImageIO.write(resizedImage, "jpg", outputStream);
+
+            log.info("[图片审核] 压缩: {}x{} -> {} bytes", width, height, outputStream.size());
+            return outputStream.toByteArray();
+
+        } catch (Exception e) {
+            log.warn("[图片审核] 图片压缩失败: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * 检测图片的MIME类型
+     */
+    private String detectMimeType(byte[] bytes) {
+        if (bytes.length < 4) {
+            return "image/jpeg";
+        }
+
+        if (bytes[0] == (byte) 0xFF && bytes[1] == (byte) 0xD8) {
+            return "image/jpeg";
+        } else if (bytes[0] == (byte) 0x89 && bytes[1] == (byte) 0x50
+                && bytes[2] == (byte) 0x4E && bytes[3] == (byte) 0x47) {
+            return "image/png";
+        } else if (bytes[0] == (byte) 0x47 && bytes[1] == (byte) 0x49
+                && bytes[2] == (byte) 0x46) {
+            return "image/gif";
+        } else if (bytes[0] == (byte) 0x52 && bytes[1] == (byte) 0x49
+                && bytes[2] == (byte) 0x46 && bytes[3] == (byte) 0x46) {
+            return "image/webp";
+        }
+
+        return "image/jpeg";
     }
 }

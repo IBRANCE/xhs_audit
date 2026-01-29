@@ -21,6 +21,8 @@ public interface AuditResultRepository extends JpaRepository<AuditResult, Long> 
 
     Optional<AuditResult> findByPostId(String postId);
 
+    Optional<AuditResult> findFirstByPostIdOrderByAuditedAtDesc(String postId);
+
     List<AuditResult> findByJobId(String jobId);
 
     Page<AuditResult> findByJobId(String jobId, Pageable pageable);

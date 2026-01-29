@@ -19,6 +19,7 @@ import com.xhs.audit.model.entity.AuditResult;
 import com.xhs.audit.repository.AuditJobRepository;
 import com.xhs.audit.repository.AuditResultRepository;
 import com.xhs.audit.service.ContentAuditService;
+import com.xhs.audit.util.AuditResultConverter;
 
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -71,7 +72,8 @@ public class AuditController {
 
         AuditDecision decision = contentAuditService.auditContent(
                 request.getUrl(),
-                request.getForceRefresh());
+                request.getForceRefresh(),
+                null);  // 单条审核没有 jobId
 
         return ResponseEntity.ok(com.xhs.audit.model.dto.ApiResponse.success(decision));
     }
@@ -92,7 +94,7 @@ public class AuditController {
 
         for (String url : request.getLinks()) {
             try {
-                AuditDecision decision = contentAuditService.auditContent(url, false);
+                AuditDecision decision = contentAuditService.auditContent(url, false, null);
                 results.add(decision);
 
                 if ("PASSED".equals(decision.getStatus())) {
@@ -182,15 +184,7 @@ public class AuditController {
      * 转换AuditResult为AuditDecision
      */
     private AuditDecision convertToDecision(AuditResult result) {
-        return AuditDecision.builder()
-                .postId(result.getPostId())
-                .url(result.getUrl())
-                .status(result.getAuditStatus())
-                .reasons(new ArrayList<>()) // TODO: 解析JSON
-                .confidenceScore(result.getConfidenceScore() != null ? result.getConfidenceScore().doubleValue() : 0.0)
-                .modelName(result.getModelName())
-                .auditedTime(result.getAuditedAt())
-                .build();
+        return AuditResultConverter.toDecision(result);
     }
 
     /**
