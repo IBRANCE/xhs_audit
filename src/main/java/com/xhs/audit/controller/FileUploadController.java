@@ -1,13 +1,23 @@
 package com.xhs.audit.controller;
 
 import java.net.URLEncoder;
+import java.time.LocalDateTime;
 import org.springframework.http.HttpHeaders;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
+import com.xhs.audit.exception.BusinessException;
 import com.xhs.audit.model.dto.ApiResponse;
+import com.xhs.audit.model.entity.AuditJob;
+import com.xhs.audit.repository.AuditJobRepository;
+import com.xhs.audit.repository.AuditJobRepositoryCustom;
 import com.xhs.audit.service.ExcelAuditService;
 
 import io.swagger.v3.oas.annotations.Operation;
@@ -35,6 +45,109 @@ public class FileUploadController {
 
         @Autowired
         private ExcelAuditService excelAuditService;
+
+        @Autowired
+        private AuditJobRepository auditJobRepository;
+
+        @Autowired
+        private AuditJobRepositoryCustom auditJobRepositoryCustom;
+
+        /**
+         * GET /api/v1/audit/jobs - 获取任务列表（分页、筛选）
+         */
+        @GetMapping("/jobs")
+        @Operation(summary = "获取任务列表", description = "分页获取审核任务列表，支持任务ID、状态、文件名和创建时间范围筛选")
+        public ResponseEntity<ApiResponse<Page<Map<String, Object>>>> getJobs(
+                        @Parameter(description = "页码", example = "0")
+                        @RequestParam(defaultValue = "0") int page,
+                        @Parameter(description = "每页数量", example = "10")
+                        @RequestParam(defaultValue = "10") int size,
+                        @Parameter(description = "任务ID精确匹配")
+                        @RequestParam(required = false) String jobId,
+                        @Parameter(description = "状态筛选: PENDING/PROCESSING/COMPLETED/PARTIAL_SUCCESS/FAILED")
+                        @RequestParam(required = false) String status,
+                        @Parameter(description = "文件名关键词搜索")
+                        @RequestParam(required = false) String keyword,
+                        @Parameter(description = "开始时间 (yyyy-MM-dd)")
+                        @RequestParam(required = false) String startDate,
+                        @Parameter(description = "结束时间 (yyyy-MM-dd)")
+                        @RequestParam(required = false) String endDate) {
+
+                log.info("收到任务列表请求: page={}, size={}, jobId={}, status={}, keyword={}, startDate={}, endDate={}",
+                        page, size, jobId, status, keyword, startDate, endDate);
+
+                // 构建分页参数
+                Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
+
+                // 解析时间参数
+                LocalDateTime startDateTime = null;
+                LocalDateTime endDateTime = null;
+                if (startDate != null && !startDate.isEmpty()) {
+                        startDateTime = LocalDateTime.parse(startDate + "T00:00:00");
+                }
+                if (endDate != null && !endDate.isEmpty()) {
+                        endDateTime = LocalDateTime.parse(endDate + "T23:59:59");
+                }
+
+                // 执行查询（使用Specification动态查询）
+                Page<AuditJob> jobPage = auditJobRepositoryCustom.searchJobs(jobId, status, keyword, startDateTime, endDateTime, pageable);
+
+                // 转换为前端需要的格式（使用camelCase以匹配前端期望）
+                Page<Map<String, Object>> resultPage = jobPage.map(job -> {
+                        Map<String, Object> map = new HashMap<>();
+                        map.put("jobId", job.getJobId());
+                        map.put("fileName", job.getFileName());
+                        map.put("totalLinks", job.getTotalLinks());
+                        map.put("completedCount", job.getCompletedCount());
+                        map.put("passedCount", job.getSuccessCount());
+                        map.put("rejectedCount", job.getFailedCount());
+                        map.put("status", job.getStatus());
+                        map.put("progressPercent", job.getTotalLinks() > 0
+                                        ? (job.getCompletedCount() * 100 / job.getTotalLinks())
+                                        : 0);
+                        map.put("createdAt", job.getCreatedAt());
+                        return map;
+                });
+
+                return ResponseEntity.ok(ApiResponse.success(resultPage));
+        }
+
+        /**
+         * GET /api/v1/audit/jobs/{jobId} - 获取任务详情
+         */
+        @GetMapping("/jobs/{jobId}")
+        @Operation(summary = "获取任务详情", description = "获取指定任务的详细信息")
+        public ResponseEntity<ApiResponse<Map<String, Object>>> getJobDetail(
+                        @Parameter(description = "任务ID", required = true)
+                        @PathVariable String jobId,
+                        @Parameter(description = "详情页码", example = "0")
+                        @RequestParam(defaultValue = "0") int page,
+                        @Parameter(description = "详情每页数量", example = "20")
+                        @RequestParam(defaultValue = "20") int size) {
+
+                log.info("收到任务详情请求: jobId={}, page={}, size={}", jobId, page, size);
+
+                // 查询任务
+                AuditJob job = auditJobRepository.findByJobId(jobId)
+                                .orElseThrow(() -> new BusinessException("ERR_JOB_NOT_FOUND", "任务不存在: " + jobId));
+
+                // 构建任务信息（使用camelCase以匹配前端期望）
+                Map<String, Object> jobInfo = new HashMap<>();
+                jobInfo.put("jobId", job.getJobId());
+                jobInfo.put("fileName", job.getFileName());
+                jobInfo.put("totalLinks", job.getTotalLinks());
+                jobInfo.put("completedCount", job.getCompletedCount());
+                jobInfo.put("passedCount", job.getSuccessCount());
+                jobInfo.put("rejectedCount", job.getFailedCount());
+                jobInfo.put("status", job.getStatus());
+                jobInfo.put("progressPercent", job.getTotalLinks() > 0
+                                ? (job.getCompletedCount() * 100 / job.getTotalLinks())
+                                : 0);
+                jobInfo.put("createdAt", job.getCreatedAt());
+                jobInfo.put("updatedAt", job.getUpdatedAt());
+
+                return ResponseEntity.ok(ApiResponse.success(jobInfo));
+        }
 
         /**
          * POST /api/v1/audit/upload - 上传Excel文件

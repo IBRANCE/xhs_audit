@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>小红书内容审核系统</title>
+    <link rel="icon" href="data:;base64,=">
+    <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+    <div class="app-layout">
+        <!-- 左侧菜单 -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <h1>内容审核工作台</h1>
+                <p class="subtitle">小红书内容智能审核系统</p>
+            </div>
+            <nav class="menu">
+                <button class="menu-item active" data-tab="single">
+                    <span class="menu-icon">&#128269;</span>
+                    <span class="menu-text">单个审核</span>
+                </button>
+                <button class="menu-item" data-tab="batch">
+                    <span class="menu-icon">&#128196;</span>
+                    <span class="menu-text">批量上传</span>
+                </button>
+                <button class="menu-item" data-tab="jobs">
+                    <span class="menu-icon">&#128197;</span>
+                    <span class="menu-text">任务列表</span>
+                </button>
+                <button class="menu-item" data-tab="history">
+                    <span class="menu-icon">&#128203;</span>
+                    <span class="menu-text">历史记录</span>
+                </button>
+            </nav>
+        </aside>
+
+        <!-- 右侧内容 -->
+        <main class="main-content">
+            <!-- Tab Content -->
+            <div class="tab-content">
+                <!-- 单个审核 -->
+                <div id="single-tab" class="tab-panel active">
+                <div class="audit-form">
+                    <div class="input-group">
+                        <input type="text" id="single-url" placeholder="粘贴小红书链接...">
+                        <button id="single-audit-btn" class="btn btn-primary">
+                            <span>开始审核</span>
+                            <span class="loading-spinner hidden"></span>
+                        </button>
+                    </div>
+                    <label class="checkbox-inline">
+                        <input type="checkbox" id="force-refresh">
+                        <span>强制刷新（跳过缓存）</span>
+                    </label>
+                </div>
+
+                <!-- 审核结果 -->
+                <div id="single-result" class="result-card hidden">
+                    <div class="result-header">
+                        <span id="result-status" class="status-badge"></span>
+                        <span id="result-risk" class="risk-badge"></span>
+                        <span id="result-confidence" class="confidence-text"></span>
+                    </div>
+                    <div id="result-details" class="result-content"></div>
+                </div>
+            </div>
+
+            <!-- 批量上传 -->
+            <div id="batch-tab" class="tab-panel">
+                <div class="upload-section">
+                    <div class="upload-area" id="upload-area">
+                        <input type="file" id="excel-file" accept=".xlsx,.xls" hidden>
+                        <div class="upload-content">
+                            <span class="upload-icon">&#128196;</span>
+                            <p class="upload-text">点击或拖拽上传Excel文件</p>
+                            <p class="upload-hint">单次最多100条数据</p>
+                        </div>
+                    </div>
+                    <a href="/api/v1/audit/template" class="btn btn-link" download>下载模板</a>
+                </div>
+
+                <div id="file-info" class="file-info hidden">
+                    <span id="file-name"></span>
+                    <button id="remove-file" class="btn-text">&times;</button>
+                </div>
+
+                <button id="upload-btn" class="btn btn-primary btn-full" disabled>
+                    <span>开始批量审核</span>
+                    <span class="loading-spinner hidden"></span>
+                </button>
+
+                <!-- 进度展示 -->
+                <div id="batch-progress" class="progress-section hidden">
+                    <div class="progress-header">
+                        <span id="progress-text">0%</span>
+                        <span id="job-status" class="status-text">处理中</span>
+                    </div>
+                    <div class="progress-bar-wrap">
+                        <div id="progress-bar" class="progress-bar"></div>
+                    </div>
+                    <div class="progress-stats">
+                        <div class="stat">
+                            <span class="stat-num" id="stat-total">0</span>
+                            <span class="stat-label">总计</span>
+                        </div>
+                        <div class="stat">
+                            <span class="stat-num" id="stat-completed">0</span>
+                            <span class="stat-label">已完成</span>
+                        </div>
+                        <div class="stat stat-green">
+                            <span class="stat-num" id="stat-passed">0</span>
+                            <span class="stat-label">通过</span>
+                        </div>
+                        <div class="stat stat-red">
+                            <span class="stat-num" id="stat-rejected">0</span>
+                            <span class="stat-label">驳回</span>
+                        </div>
+                    </div>
+                    <button id="download-btn" class="btn btn-primary btn-full hidden">下载结果</button>
+                </div>
+            </div>
+
+            <!-- 任务列表 -->
+            <div id="jobs-tab" class="tab-panel">
+                <div class="filter-bar" style="margin-bottom: 20px;">
+                    <div class="filter-main">
+                        <input type="text" id="job-filter-id" placeholder="任务ID" style="width: 200px;">
+                        <input type="text" id="job-filter-keyword" placeholder="搜索文件名...">
+                        <button id="job-search-btn" class="btn btn-primary">查询</button>
+                    </div>
+                    <div class="filter-date">
+                        <select id="job-filter-status" style="width: 130px;">
+                            <option value="">全部状态</option>
+                            <option value="PENDING">等待中</option>
+                            <option value="PROCESSING">处理中</option>
+                            <option value="COMPLETED">已完成</option>
+                            <option value="PARTIAL_SUCCESS">部分成功</option>
+                            <option value="FAILED">失败</option>
+                        </select>
+                        <input type="date" id="job-filter-start-date">
+                        <span>至</span>
+                        <input type="date" id="job-filter-end-date">
+                    </div>
+                </div>
+
+                <!-- 任务列表 -->
+                <div class="table-wrap">
+                    <table id="job-table">
+                        <thead>
+                            <tr>
+                                <th>任务ID</th>
+                                <th>文件名</th>
+                                <th>总计</th>
+                                <th>完成</th>
+                                <th>通过</th>
+                                <th>驳回</th>
+                                <th>进度</th>
+                                <th>状态</th>
+                                <th>创建时间</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="job-tbody"></tbody>
+                    </table>
+                    <div id="job-empty-state" class="empty-state hidden">
+                        <p>暂无任务数据</p>
+                    </div>
+                </div>
+
+                <!-- 底部栏 -->
+                <div class="table-footer">
+                    <div class="pagination">
+                        <button id="job-prev-page" class="btn btn-sm" disabled>&lt;</button>
+                        <span id="job-page-info">1 / 1</span>
+                        <button id="job-next-page" class="btn btn-sm" disabled>&gt;</button>
+                        <select id="job-page-size" class="page-select">
+                            <option value="10" selected>10</option>
+                            <option value="20">20</option>
+                            <option value="50">50</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 历史记录 -->
+            <div id="history-tab" class="tab-panel">
+                <!-- 筛选栏 -->
+                <div class="filter-bar">
+                    <div class="filter-main">
+                        <input type="text" id="filter-post-id" placeholder="帖子ID" style="width: 180px;">
+                        <input type="text" id="filter-job-id" placeholder="任务ID" style="width: 180px;">
+                        <button id="search-btn" class="btn btn-primary">查询</button>
+                    </div>
+                    <div class="filter-date">
+                        <select id="filter-status" style="width: 120px;">
+                            <option value="">全部状态</option>
+                            <option value="PASSED">通过</option>
+                            <option value="REJECTED">驳回</option>
+                            <option value="UNCERTAIN">待审核</option>
+                        </select>
+                        <input type="date" id="filter-start-date">
+                        <span>至</span>
+                        <input type="date" id="filter-end-date">
+                    </div>
+                </div>
+
+                <!-- 数据表格 -->
+                <div class="table-wrap">
+                    <table id="history-table">
+                        <thead>
+                            <tr>
+                                <th>帖子ID</th>
+                                <th>任务ID</th>
+                                <th>状态</th>
+                                <th>风险</th>
+                                <th>置信度</th>
+                                <th>审核时间</th>
+                            </tr>
+                        </thead>
+                        <tbody id="history-tbody"></tbody>
+                    </table>
+                    <div id="empty-state" class="empty-state hidden">
+                        <p>暂无数据</p>
+                    </div>
+                </div>
+
+                <!-- 底部栏 -->
+                <div class="table-footer">
+                    <div class="pagination">
+                        <button id="prev-page" class="btn btn-sm" disabled>&lt;</button>
+                        <span id="page-info">1 / 1</span>
+                        <button id="next-page" class="btn btn-sm" disabled>&gt;</button>
+                        <select id="page-size" class="page-select">
+                            <option value="20" selected>20</option>
+                            <option value="50">50</option>
+                            <option value="100">100</option>
+                        </select>
+                    </div>
+                    <button id="export-btn" class="btn btn-sm">导出全部</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 任务详情弹窗 -->
+        <div id="job-detail-modal" class="modal hidden">
+            <div class="detail-modal-content" style="max-width: 900px;">
+                <div class="detail-modal-header">
+                    <h3>任务详情</h3>
+                    <button class="job-detail-modal-close">&times;</button>
+                </div>
+                <div id="job-detail-modal-body" class="detail-modal-body"></div>
+            </div>
+        </div>
+
+        <!-- 详情弹窗 -->
+        <div id="detail-modal" class="modal hidden">
+            <div class="detail-modal-content">
+                <div class="detail-modal-header">
+                    <h3>帖子详情</h3>
+                    <button class="detail-modal-close">&times;</button>
+                </div>
+                <div id="detail-modal-body" class="detail-modal-body"></div>
+            </div>
+        </div>
+
+        <!-- 图片预览弹窗 -->
+        <div id="image-modal" class="modal hidden">
+            <div class="modal-content">
+                <button class="modal-close">&times;</button>
+                <img id="modal-image" src="" alt="预览">
+            </div>
+        </div>
+
+        <!-- Toast提示 -->
+        <div id="toast" class="toast hidden"></div>
+    </main>
+</div>
+
+    <script src="/js/app.js"></script>
+</body>
+</html>

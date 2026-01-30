@@ -1,9 +1,14 @@
 package com.xhs.audit.controller;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
@@ -12,6 +17,7 @@ import com.xhs.audit.exception.ResourceNotFoundException;
 import com.xhs.audit.model.dto.ApiResponse;
 import com.xhs.audit.model.dto.AuditDecision;
 import com.xhs.audit.model.dto.AuditRequest;
+import com.xhs.audit.model.dto.AuditResultItem;
 import com.xhs.audit.model.dto.BatchAuditRequest;
 import com.xhs.audit.model.dto.JobStatusResponse;
 import com.xhs.audit.model.entity.AuditJob;
@@ -178,6 +184,66 @@ public class AuditController {
         AuditDecision decision = convertToDecision(result);
 
         return ResponseEntity.ok(ApiResponse.success(decision));
+    }
+
+    /**
+     * GET /api/v1/audit/results - 查询审核结果列表（分页、筛选）
+     */
+    @Operation(summary = "获取审核结果列表", description = "分页获取审核结果，支持按postId、jobId、状态、时间筛选")
+    @GetMapping("/results")
+    public ResponseEntity<ApiResponse<Page<AuditResultItem>>> getAuditResults(
+            @Parameter(description = "页码", example = "0")
+            @RequestParam(defaultValue = "0") int page,
+            @Parameter(description = "每页数量", example = "20")
+            @RequestParam(defaultValue = "20") int size,
+            @Parameter(description = "帖子ID精确匹配")
+            @RequestParam(required = false) String postId,
+            @Parameter(description = "任务ID精确匹配")
+            @RequestParam(required = false) String jobId,
+            @Parameter(description = "审核状态筛选: PASSED/REJECTED/UNCERTAIN")
+            @RequestParam(required = false) String status,
+            @Parameter(description = "开始时间 (yyyy-MM-dd)")
+            @RequestParam(required = false) String startDate,
+            @Parameter(description = "结束时间 (yyyy-MM-dd)")
+            @RequestParam(required = false) String endDate) {
+
+        log.info("收到审核结果列表请求: page={}, size={}, postId={}, jobId={}, status={}, startDate={}, endDate={}",
+                page, size, postId, jobId, status, startDate, endDate);
+
+        // 解析时间参数
+        LocalDateTime startDateTime = null;
+        LocalDateTime endDateTime = null;
+        if (startDate != null && !startDate.isEmpty()) {
+            startDateTime = LocalDateTime.parse(startDate + "T00:00:00");
+        }
+        if (endDate != null && !endDate.isEmpty()) {
+            endDateTime = LocalDateTime.parse(endDate + "T23:59:59");
+        }
+
+        // 构建分页参数
+        Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "auditedAt"));
+
+        // 执行查询
+        Page<AuditResultItem> results = contentAuditService.searchAuditResults(
+                postId, jobId, status, startDateTime, endDateTime, pageable);
+
+        return ResponseEntity.ok(ApiResponse.success(results));
+    }
+
+    /**
+     * GET /api/v1/audit/results/{postId}/detail - 获取审核详情
+     */
+    @Operation(summary = "获取审核详情", description = "根据帖子ID获取完整的审核详情（包括xhs_content内容）")
+    @GetMapping("/results/{postId}/detail")
+    public ResponseEntity<ApiResponse<com.xhs.audit.model.dto.AuditDetailResponse>> getAuditDetail(
+            @Parameter(description = "帖子ID", required = true)
+            @PathVariable String postId) {
+
+        log.info("收到审核详情请求: postId={}", postId);
+
+        com.xhs.audit.model.dto.AuditDetailResponse detail = contentAuditService.getAuditDetailByPostId(postId);
+
+        return ResponseEntity.ok(ApiResponse.success(detail));
     }
 
     /**

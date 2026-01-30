@@ -63,6 +63,14 @@ spring:
   web:
     resources:
       static-locations: classpath:/static/
+
+  # Thymeleaf配置
+  thymeleaf:
+    prefix: classpath:/templates/
+    suffix: .html
+    mode: HTML
+    cache: false
+    encoding: UTF-8
   
   flyway:
     enabled: false
