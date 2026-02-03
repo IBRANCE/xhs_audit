@@ -10,40 +10,38 @@ import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 
-import org.openqa.selenium.By;
-import org.openqa.selenium.JavascriptExecutor;
-import org.openqa.selenium.WebDriver;
-import org.openqa.selenium.WebElement;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
-import com.xhs.audit.infrastructure.SeleniumManager;
+import com.microsoft.playwright.Locator;
+import com.microsoft.playwright.Page;
+import com.xhs.audit.infrastructure.PlaywrightManager;
 import com.xhs.audit.model.entity.XhsContent;
 import com.xhs.audit.repository.XhsContentRepository;
 
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * 爬虫服务 - 基于 Selenium Grid 的实现
+ * 爬虫服务 - 负责从小红书爬取内容
  *
  * 核心功能:
  * 1. 三级缓存检查 (Redis -> PostgreSQL -> 爬虫)
- * 2. 基于Selenium Grid的分布式爬虫（支持多线程）
+ * 2. 基于Playwright的动态爬虫
  * 3. 异常处理和重试机制
  * 4. 数据持久化
  *
  * @author Bruce
- * @since 2026-02-02
+ * @since 2026-02-01
  */
 @Service
 @Slf4j
 public class CrawlerService {
 
     @Autowired
-    private SeleniumManager seleniumManager;
+    private PlaywrightManager playwrightManager;
 
     @Autowired
     private XhsContentRepository contentRepository;
@@ -53,10 +51,8 @@ public class CrawlerService {
 
     private static final String CONTENT_CACHE_PREFIX = "xhs:content:";
     private static final long CACHE_TTL_SECONDS = 86400;
-    // 重试次数增加到5次，应对可能连续拿到快要失败的Driver的情况
-    // poolSize=4, MAX_FAILURES_THRESHOLD=3, 5次重试可以覆盖最坏场景
-    private static final int MAX_RETRY_ATTEMPTS = 5;
-    private static final long[] RETRY_DELAYS_MS = { 500, 1000, 1500, 2000, 2500 };
+    private static final int MAX_RETRY_ATTEMPTS = 3;
+    private static final long[] RETRY_DELAYS_MS = { 1000, 2000, 4000 };
     // 支持标准小红书链接和 xhslink.com 短链接
     private static final Pattern XHS_URL_PATTERN = Pattern.compile(
             "https://(?:www\\.)?xiaohongshu\\.com/(?:explore|discovery/item)/([a-zA-Z0-9_-]+)");
@@ -95,9 +91,10 @@ public class CrawlerService {
 
     /**
      * 核心方法: 爬取内容(三级缓存 + 爬虫)
+     * 不使用方法级事务，将事务范围压缩到具体的数据库操作
      */
     public XhsContent crawlContent(String url) throws Exception {
-        log.info("[爬虫服务-Selenium] 开始爬取: url={}", url);
+        log.info("[爬虫服务] 开始爬取: url={}", url);
 
         // 检查是否是短链接
         boolean isShortLink = XHS_SHORTLINK_PATTERN.matcher(url).find();
@@ -108,7 +105,7 @@ public class CrawlerService {
             java.util.regex.Matcher shortMatcher = XHS_SHORTLINK_PATTERN.matcher(url);
             if (shortMatcher.find()) {
                 postId = "short_" + shortMatcher.group(1);
-                log.info("[爬虫服务-Selenium] 检测到短链接，使用临时postId: {}", postId);
+                log.info("[爬虫服务] 检测到短链接，使用临时postId: {}", postId);
             } else {
                 throw new IllegalArgumentException("无法解析短链接ID: " + url);
             }
@@ -123,50 +120,52 @@ public class CrawlerService {
         String cacheKey = CONTENT_CACHE_PREFIX + postId;
 
         // 第一级缓存: Redis (热数据)
-        log.debug("[爬虫服务-Selenium] 检查Redis缓存: postId={}", postId);
+        log.debug("[爬虫服务] 检查Redis缓存: postId={}", postId);
         if (redisTemplate != null) {
             XhsContent cachedContent = getFromRedis(cacheKey);
             if (cachedContent != null) {
-                log.info("[爬虫服务-Selenium] Redis缓存命中: postId={}, 跳过爬取", postId);
+                log.info("[爬虫服务] Redis缓存命中: postId={}, 跳过爬取", postId);
                 return cachedContent;
             }
-            log.debug("[爬虫服务-Selenium] Redis缓存未命中", postId);
+            log.debug("[爬虫服务] Redis缓存未命中", postId);
         }
 
         // 第二级缓存: PostgreSQL (冷数据)
-        log.debug("[爬虫服务-Selenium] 检查PostgreSQL数据库: postId={}", postId);
+        log.debug("[爬虫服务] 检查PostgreSQL数据库: postId={}", postId);
         Optional<XhsContent> dbContent = findContentByUrl(url);
         if (dbContent.isPresent()) {
             XhsContent content = dbContent.get();
             // 验证从数据库读取的内容是否有效
             try {
                 validateCrawledContent(content);
-                log.info("[爬虫服务-Selenium] PostgreSQL缓存命中且有效: postId={}, 异步更新Redis", postId);
+                log.info("[爬虫服务] PostgreSQL缓存命中且有效: postId={}, 异步更新Redis", postId);
                 if (redisTemplate != null) {
                     updateRedisCache(cacheKey, content);
                 }
                 return content;
             } catch (RuntimeException e) {
                 // 数据库中的内容无效，删除并重新爬取
-                log.warn("[爬虫服务-Selenium] PostgreSQL缓存内容无效，删除并重新爬取: postId={}, error={}", postId, e.getMessage());
+                log.warn("[爬虫服务] PostgreSQL缓存内容无效，删除并重新爬取: postId={}, error={}", postId, e.getMessage());
                 deleteContent(content);
+                // 继续执行下面的爬虫逻辑
             }
         }
-        log.debug("[爬虫服务-Selenium] PostgreSQL缓存未命中，需要执行爬虫", postId);
+        log.debug("[爬虫服务] PostgreSQL缓存未命中，需要执行爬虫", postId);
 
         // 第三级: 执行爬虫 (带重试)
-        log.info("[爬虫服务-Selenium] 开始Selenium爬取: postId={}", postId);
+        log.info("[爬虫服务] 开始Playwright爬取: postId={}", postId);
         XhsContent content = crawlWithRetry(url);
 
+        // 注意：URL已在executeWebScraping中设置为最终跳转后的URL
         // 短链接场景：尝试从页面中提取真实postId
         if (isShortLink && content.getPostId() != null && !content.getPostId().startsWith("short_")) {
             String realPostId = content.getPostId();
-            log.info("[爬虫服务-Selenium] 短链接已解析，获取真实postId: {} -> {}", postId, realPostId);
+            log.info("[爬虫服务] 短链接已解析，获取真实postId: {} -> {}", postId, realPostId);
 
-            // 检查真实postId是否已存在
+            // 关键修复：检查真实postId是否已存在（可能通过标准链接已爬取过）
             Optional<XhsContent> existingByPostId = findContentByPostId(realPostId);
             if (existingByPostId.isPresent()) {
-                log.info("[爬虫服务-Selenium] 真实postId已存在，复用已有记录: {}", realPostId);
+                log.info("[爬虫服务] 真实postId已存在，复用已有记录: {}", realPostId);
                 XhsContent existing = existingByPostId.get();
                 // 更新URL为短链接（便于追溯来源）
                 existing.setUrl(url);
@@ -187,14 +186,14 @@ public class CrawlerService {
 
             // 用新postId重新保存到数据库
             String newCacheKey = CONTENT_CACHE_PREFIX + realPostId;
-            log.debug("[爬虫服务-Selenium] 更新缓存Key: {} -> {}", cacheKey, newCacheKey);
+            log.debug("[爬虫服务] 更新缓存Key: {} -> {}", cacheKey, newCacheKey);
 
             // 删除旧的短链接记录（如果存在）
             final String oldCacheKey = cacheKey;
             try {
                 deleteOldContentByUrl(url, oldCacheKey);
             } catch (Exception e) {
-                log.warn("[爬虫服务-Selenium] 删除旧记录失败: {}", e.getMessage());
+                log.warn("[爬虫服务] 删除旧记录失败: {}", e.getMessage());
             }
 
             // 用新postId保存
@@ -206,15 +205,15 @@ public class CrawlerService {
         validateCrawledContent(content);
 
         // 存储结果
-        log.debug("[爬虫服务-Selenium] 同步保存到PostgreSQL: postId={}", postId);
+        log.debug("[爬虫服务] 同步保存到PostgreSQL: postId={}", postId);
         saveContent(content);
 
         if (redisTemplate != null) {
-            log.debug("[爬虫服务-Selenium] 异步保存到Redis: postId={}", postId);
+            log.debug("[爬虫服务] 异步保存到Redis: postId={}", postId);
             updateRedisCache(cacheKey, content);
         }
 
-        log.info("[爬虫服务-Selenium完成] postId={}, title={}", postId, content.getTitle());
+        log.info("[爬虫服务完成] postId={}, title={}", postId, content.getTitle());
         return content;
     }
 
@@ -231,7 +230,7 @@ public class CrawlerService {
             } catch (RuntimeException e) {
                 lastException = e;
                 Throwable cause = e.getCause();
-                boolean poolTimeout = e instanceof SeleniumManager.BrowserPoolExhaustedException;
+                boolean poolTimeout = e instanceof PlaywrightManager.BrowserPoolExhaustedException;
                 boolean isRetryable = poolTimeout ||
                         (cause instanceof java.io.IOException) ||
                         (cause instanceof java.net.SocketTimeoutException);
@@ -258,28 +257,40 @@ public class CrawlerService {
     }
 
     /**
-     * 执行网页爬虫 - 使用Selenium
+     * 执行网页爬虫 - 使用Playwright
      */
     private XhsContent executeWebScraping(String url) {
         long startTime = System.currentTimeMillis();
-        SeleniumManager.DriverWrapper driverWrapper = null;
+        PlaywrightManager.PageWrapper pageWrapper = null;
 
         try {
-            driverWrapper = seleniumManager.borrowDriver();
-            WebDriver driver = driverWrapper.driver;
+            pageWrapper = playwrightManager.borrowPage();
+            Page page = pageWrapper.page;
 
-            log.debug("[爬虫服务-Selenium] 开始导航到页面: {}", url);
-            driver.get(url);
+            // 性能优化：阻止不必要的资源加载（图片、字体、CSS等）
+            // 这能将页面加载时间从 8秒 降至 5秒 左右
+            page.route("**/*.{png,jpg,jpeg,gif,svg,webp,ico,woff,woff2,ttf,eot,css}", route -> {
+                route.abort();
+            });
+            log.debug("[爬虫服务] 已启用资源拦截，跳过图片/字体/CSS加载");
 
-            // 等待主要内容加载完成
-            waitForContentLoad(driver);
+            // 使用domcontentloaded等待策略，避免被持续加载的资源卡住
+            // 小红书页面可能有一些资源一直在加载，导致load事件不触发
+            Page.NavigateOptions navigateOptions = new Page.NavigateOptions()
+                    .setWaitUntil(com.microsoft.playwright.options.WaitUntilState.DOMCONTENTLOADED)
+                    .setTimeout(20000); // 降低超时时间到20秒（配合资源拦截）
+
+            page.navigate(url, navigateOptions);
 
             // 获取最终URL（短链接跳转后的真实URL）
-            String finalUrl = driver.getCurrentUrl();
-            log.debug("[爬虫服务-Selenium] 页面URL: {} -> {}", url, finalUrl);
+            String finalUrl = page.url();
+            log.debug("[爬虫服务] 页面URL: {} -> {}", url, finalUrl);
+
+            // 等待主要内容加载完成
+            page.waitForSelector("[class*='content']", new Page.WaitForSelectorOptions().setTimeout(10000));
 
             // 模拟真实用户浏览：页面滚动机制
-            simulateUserScrolling(driver);
+            simulateUserScrolling(page);
 
             XhsContent content = new XhsContent();
             content.setUrl(finalUrl);
@@ -288,14 +299,14 @@ public class CrawlerService {
             content.setCreatedAt(LocalDateTime.now());
             content.setUpdatedAt(LocalDateTime.now());
 
-            // 爬取标题
-            String title = extractTextWithFallback(driver, TITLE_SELECTORS);
+            // 爬取标题（精确优先）
+            String title = extractTextWithFallback(page, TITLE_SELECTORS);
             if (title != null) {
                 content.setTitle(title);
             }
 
-            // 爬取正文
-            String description = extractTextWithFallback(driver, DESCRIPTION_SELECTORS);
+            // 爬取正文 - 尝试多个可能的选择器
+            String description = extractTextWithFallback(page, DESCRIPTION_SELECTORS);
             if (description != null && !description.isEmpty()) {
                 content.setContent(description);
                 log.debug("正文提取成功，长度: {}", description.length());
@@ -304,19 +315,19 @@ public class CrawlerService {
             }
 
             // 爬取图片
-            List<String> images = extractImageUrlsWithFallback(driver, IMAGE_SELECTORS);
+            List<String> images = extractImageUrlsWithFallback(page, IMAGE_SELECTORS);
             if (!images.isEmpty()) {
                 content.setImages(images);
             }
 
             // 爬取Tag
-            List<String> tags = extractTagsWithFallback(driver, TAG_SELECTORS);
+            List<String> tags = extractTagsWithFallback(page, TAG_SELECTORS);
             if (!tags.isEmpty()) {
                 content.setTags(tags);
             }
 
             // 提取元数据
-            enrichMetadata(driver, content);
+            enrichMetadata(page, content);
 
             long duration = System.currentTimeMillis() - startTime;
             log.info("爬虫完成: postId={}, 耗时={}ms", content.getPostId(), duration);
@@ -328,69 +339,41 @@ public class CrawlerService {
             return content;
 
         } catch (RuntimeException e) {
-            // 标记 Driver 为不健康，避免重复使用有问题的连接
-            if (driverWrapper != null) {
-                driverWrapper.markUnhealthy();
-            }
             throw e;
         } catch (Exception e) {
-            // 标记 Driver 为不健康，避免重复使用有问题的连接
-            if (driverWrapper != null) {
-                driverWrapper.markUnhealthy();
-            }
             throw new RuntimeException("爬虫执行失败: " + e.getMessage(), e);
         } finally {
-            if (driverWrapper != null) {
+            if (pageWrapper != null) {
                 try {
-                    driverWrapper.close();
+                    pageWrapper.close();
                 } catch (Exception e) {
-                    log.warn("关闭Driver Wrapper异常: {}", e.getMessage());
+                    log.warn("关闭Page Wrapper异常: {}", e.getMessage());
                 }
             }
-        }
-    }
-
-    /**
-     * 等待内容加载
-     */
-    private void waitForContentLoad(WebDriver driver) {
-        try {
-            // 等待主要内容区域出现
-            org.openqa.selenium.support.ui.WebDriverWait wait = new org.openqa.selenium.support.ui.WebDriverWait(driver,
-                    java.time.Duration.ofSeconds(10));
-            wait.until(d -> {
-                try {
-                    return !d.findElements(By.cssSelector("[class*='content']")).isEmpty();
-                } catch (Exception e) {
-                    return false;
-                }
-            });
-        } catch (Exception e) {
-            log.warn("等待内容加载超时: {}", e.getMessage());
         }
     }
 
     /**
      * 提取元数据
      */
-    private void enrichMetadata(WebDriver driver, XhsContent content) {
+    private void enrichMetadata(Page page, XhsContent content) {
         try {
             Map<String, Object> metadata = new HashMap<>();
 
-            String author = normalizeAuthorName(extractTextWithFallback(driver, AUTHOR_SELECTORS));
+            String author = normalizeAuthorName(extractTextWithFallback(page, AUTHOR_SELECTORS));
             if (author != null) {
                 metadata.put("author", author);
                 content.setAuthorId(author);
             }
 
-            String publishTime = extractTextWithFallback(driver, PUBLISH_TIME_SELECTORS);
+            String publishTime = extractTextWithFallback(page, PUBLISH_TIME_SELECTORS);
             if (publishTime != null) {
                 metadata.put("publishTime", publishTime);
             }
 
-            metadata.put("likes", extractNumber(driver, "[class*='like']"));
-            metadata.put("comments", extractNumber(driver, "[class*='comment']"));
-            metadata.put("shares", extractNumber(driver, "[class*='share']"));
+            metadata.put("likes", extractNumber(page, "[class*='like']"));
+            metadata.put("comments", extractNumber(page, "[class*='comment']"));
+            metadata.put("shares", extractNumber(page, "[class*='share']"));
 
             content.setMetadata(metadata);
         } catch (Exception e) {
@@ -399,17 +382,34 @@ public class CrawlerService {
     }
 
     /**
+     * 提取文本
+     */
+    private String extractText(Page page, String selector) {
+        try {
+            // 使用Locator API代替evaluate，更安全可靠
+            Locator locator = page.locator(selector);
+            if (locator.count() > 0) {
+                return locator.first().innerText().trim();
+            }
+            return null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
      * 提取文本 - 带回退机制，尝试多个选择器
      */
-    private String extractTextWithFallback(WebDriver driver, String... selectors) {
+    private String extractTextWithFallback(Page page, String... selectors) {
         for (String selector : selectors) {
             try {
                 log.debug("尝试选择器: {}", selector);
-                List<WebElement> elements = driver.findElements(By.cssSelector(selector));
-                log.debug("选择器 {} 匹配到 {} 个元素", selector, elements.size());
+                Locator locator = page.locator(selector);
+                int count = locator.count();
+                log.debug("选择器 {} 匹配到 {} 个元素", selector, count);
 
-                if (!elements.isEmpty()) {
-                    String text = elements.get(0).getText().trim();
+                if (count > 0) {
+                    String text = locator.first().innerText().trim();
                     if (text != null && !text.isEmpty()) {
                         log.info("成功提取文本，使用选择器: {}, 长度: {}", selector, text.length());
                         return text;
@@ -425,12 +425,12 @@ public class CrawlerService {
     /**
      * 提取图片URL（精确优先，失败后回退）
      */
-    private List<String> extractImageUrlsWithFallback(WebDriver driver, String... selectors) {
+    private List<String> extractImageUrlsWithFallback(Page page, String... selectors) {
         for (String selector : selectors) {
             if (selector == null || selector.isEmpty()) {
                 continue;
             }
-            List<String> urls = extractImageUrlsBySelector(driver, selector);
+            List<String> urls = extractImageUrlsBySelector(page, selector);
             if (!urls.isEmpty()) {
                 return urls;
             }
@@ -442,12 +442,12 @@ public class CrawlerService {
      * 提取图片URL（过滤掉头像）
      */
     @SuppressWarnings("unchecked")
-    private List<String> extractImageUrlsBySelector(WebDriver driver, String selector) {
+    private List<String> extractImageUrlsBySelector(Page page, String selector) {
         List<String> urls = new ArrayList<>();
         try {
-            JavascriptExecutor js = (JavascriptExecutor) driver;
-            Object result = js.executeScript(
-                    "return Array.from(document.querySelectorAll(arguments[0]))" +
+            // 使用参数传递选择器，避免JavaScript语法错误
+            Object result = page.evaluate(
+                    "(selector) => Array.from(document.querySelectorAll(selector))" +
                             ".map(img => img.src || img.getAttribute('data-src') || img.dataset.src)" +
                             ".filter(Boolean)",
                     selector);
@@ -456,7 +456,7 @@ public class CrawlerService {
                 for (Object item : (java.util.List<?>) result) {
                     if (item != null) {
                         String url = item.toString();
-                        // 过滤掉头像图片
+                        // 过滤掉头像图片（包含/avatar/或/avatar）
                         if (!url.contains("/avatar/") && !url.contains("avatar")) {
                             urls.add(url);
                         }
@@ -472,12 +472,12 @@ public class CrawlerService {
     /**
      * 提取Tag（精确优先，失败后回退）
      */
-    private List<String> extractTagsWithFallback(WebDriver driver, String... selectors) {
+    private List<String> extractTagsWithFallback(Page page, String... selectors) {
         for (String selector : selectors) {
             if (selector == null || selector.isEmpty()) {
                 continue;
             }
-            List<String> tags = extractTagsBySelector(driver, selector);
+            List<String> tags = extractTagsBySelector(page, selector);
             if (!tags.isEmpty()) {
                 return tags;
             }
@@ -489,12 +489,12 @@ public class CrawlerService {
      * 提取Tag
      */
     @SuppressWarnings("unchecked")
-    private List<String> extractTagsBySelector(WebDriver driver, String selector) {
+    private List<String> extractTagsBySelector(Page page, String selector) {
         List<String> tags = new ArrayList<>();
         try {
-            JavascriptExecutor js = (JavascriptExecutor) driver;
-            Object result = js.executeScript(
-                    "return Array.from(document.querySelectorAll(arguments[0]))" +
+            // 使用参数传递选择器，避免JavaScript语法错误
+            Object result = page.evaluate(
+                    "(selector) => Array.from(document.querySelectorAll(selector))" +
                             ".map(tag => tag.innerText).filter(Boolean)",
                     selector);
 
@@ -514,11 +514,11 @@ public class CrawlerService {
     /**
      * 提取数字
      */
-    private Integer extractNumber(WebDriver driver, String selector) {
+    private Integer extractNumber(Page page, String selector) {
         try {
-            JavascriptExecutor js = (JavascriptExecutor) driver;
-            Object result = js.executeScript(
-                    "return parseInt(document.querySelector(arguments[0])?.innerText || '0')",
+            // 使用参数传递选择器，避免JavaScript语法错误
+            Object result = page.evaluate(
+                    "(selector) => parseInt(document.querySelector(selector)?.innerText || '0')",
                     selector);
             return result instanceof Number ? ((Number) result).intValue() : 0;
         } catch (Exception e) {
@@ -527,7 +527,7 @@ public class CrawlerService {
     }
 
     /**
-     * 规范化作者名称
+     * 规范化作者名称，剔除多余按钮文案
      */
     private String normalizeAuthorName(String rawAuthor) {
         if (rawAuthor == null) {
@@ -544,52 +544,58 @@ public class CrawlerService {
 
     /**
      * 模拟真实用户滚动页面
+     * 小红书的反爬机制会检测用户行为，需要模拟真实的浏览动作
      */
-    private void simulateUserScrolling(WebDriver driver) {
+    private void simulateUserScrolling(Page page) {
         try {
-            log.debug("[爬虫服务-Selenium] 开始模拟用户滚动");
-            JavascriptExecutor js = (JavascriptExecutor) driver;
+            log.debug("[爬虫服务] 开始模拟用户滚动");
 
             // 获取页面总高度
-            Long totalHeight = (Long) js.executeScript("return document.body.scrollHeight");
+            Object heightObj = page.evaluate("() => document.body.scrollHeight");
+            int totalHeight = heightObj instanceof Number ? ((Number) heightObj).intValue() : 3000;
 
-            // 分段滚动
+            // 分段滚动，每次滚动200-400像素
             int currentPosition = 0;
-            int scrollStep = 300;
-            int maxScrolls = 3;
+            int scrollStep = 300; // 每次滚动的像素
+            int maxScrolls = 5; // 最多滚动5次
             int scrollCount = 0;
 
             while (currentPosition < totalHeight && scrollCount < maxScrolls) {
+                // 随机滚动距离（200-400像素）
                 int randomScroll = scrollStep + (int) (Math.random() * 200);
                 currentPosition += randomScroll;
 
-                js.executeScript("window.scrollTo(0, " + currentPosition + ")");
+                // 执行滚动
+                page.evaluate("window.scrollTo(0, " + currentPosition + ")");
 
-                // 随机等待
-                int waitTime = 100 + (int) (Math.random() * 100);
+                // 随机等待时间（200-500ms），模拟真实用户阅读
+                int waitTime = 200 + (int) (Math.random() * 300);
                 Thread.sleep(waitTime);
 
                 scrollCount++;
-                log.debug("[爬虫服务-Selenium] 滚动进度: {}/{}, 位置: {}px", scrollCount, maxScrolls, currentPosition);
+                log.debug("[爬虫服务] 滚动进度: {}/{}, 位置: {}px", scrollCount, maxScrolls, currentPosition);
             }
 
-            // 滚动回顶部
-            js.executeScript("window.scrollTo(0, 0)");
+            // 滚动回顶部，确保能看到标题等关键信息
+            page.evaluate("window.scrollTo(0, 0)");
             Thread.sleep(300);
 
-            log.debug("[爬虫服务-Selenium] 用户滚动模拟完成");
+            log.debug("[爬虫服务] 用户滚动模拟完成");
 
         } catch (Exception e) {
-            log.warn("[爬虫服务-Selenium] 页面滚动失败: {}", e.getMessage());
+            log.warn("[爬虫服务] 页面滚动失败: {}", e.getMessage());
+            // 滚动失败不影响爬取，继续执行
         }
     }
 
     /**
      * 验证爬取的内容是否有效
+     * 如果内容无效，抛出异常阻止保存到数据库
      */
     private void validateCrawledContent(XhsContent content) {
         List<String> errors = new ArrayList<>();
 
+        // 验证必填字段
         if (content.getPostId() == null || content.getPostId().isEmpty()) {
             errors.add("PostID为空");
         }
@@ -598,6 +604,7 @@ public class CrawlerService {
             errors.add("URL为空");
         }
 
+        // 验证核心内容 - 至少要有标题或正文
         boolean hasTitle = content.getTitle() != null && !content.getTitle().trim().isEmpty();
         boolean hasContent = content.getContent() != null && !content.getContent().trim().isEmpty();
         boolean hasImages = content.getImages() != null && !content.getImages().isEmpty();
@@ -606,13 +613,14 @@ public class CrawlerService {
             errors.add("爬取内容为空：没有标题、正文或图片");
         }
 
+        // 如果有错误，抛出异常
         if (!errors.isEmpty()) {
             String errorMsg = String.join("; ", errors);
-            log.error("[爬虫服务-Selenium] 内容验证失败: postId={}, errors={}", content.getPostId(), errorMsg);
+            log.error("[爬虫服务] 内容验证失败: postId={}, errors={}", content.getPostId(), errorMsg);
             throw new RuntimeException("爬取内容验证失败: " + errorMsg);
         }
 
-        log.info("[爬虫服务-Selenium] 内容验证通过: postId={}, hasTitle={}, hasContent={}, hasImages={}",
+        log.info("[爬虫服务] 内容验证通过: postId={}, hasTitle={}, hasContent={}, hasImages={}",
                 content.getPostId(), hasTitle, hasContent, hasImages);
     }
 
@@ -664,7 +672,7 @@ public class CrawlerService {
     }
 
     /**
-     * 批量爬取（支持并发）
+     * 批量爬取
      */
     public List<XhsContent> crawlContentBatch(List<String> urls) {
         List<XhsContent> results = Collections.synchronizedList(new ArrayList<>());
@@ -694,28 +702,104 @@ public class CrawlerService {
         }
     }
 
+    /**
+     * 清理数据库中的无效内容数据
+     * 扫描所有内容，删除不符合验证规则的记录
+     * 
+     * @return 清理统计信息
+     */
+    public Map<String, Object> cleanInvalidContents() {
+        log.info("[数据清理] 开始清理数据库中的无效内容");
+
+        int totalCount = 0;
+        int invalidCount = 0;
+        List<String> deletedPostIds = new ArrayList<>();
+
+        try {
+            // 查询所有内容
+            List<XhsContent> allContents = contentRepository.findAll();
+            totalCount = allContents.size();
+            log.info("[数据清理] 共找到 {} 条内容记录", totalCount);
+
+            // 验证每条记录
+            for (XhsContent content : allContents) {
+                try {
+                    validateCrawledContent(content);
+                    // 验证通过，保留
+                } catch (RuntimeException e) {
+                    // 验证失败，删除
+                    invalidCount++;
+                    deletedPostIds.add(content.getPostId());
+                    log.warn("[数据清理] 删除无效内容: postId={}, url={}, error={}",
+                            content.getPostId(), content.getUrl(), e.getMessage());
+
+                    // 从数据库删除
+                    contentRepository.delete(content);
+
+                    // 从Redis删除（如果存在）
+                    if (redisTemplate != null) {
+                        String cacheKey = CONTENT_CACHE_PREFIX + content.getPostId();
+                        redisTemplate.delete(cacheKey);
+                    }
+                }
+            }
+
+            log.info("[数据清理] 清理完成: 总计={}, 无效={}, 有效={}",
+                    totalCount, invalidCount, totalCount - invalidCount);
+
+        } catch (Exception e) {
+            log.error("[数据清理] 清理过程发生异常", e);
+            throw new RuntimeException("数据清理失败: " + e.getMessage(), e);
+        }
+
+        // 返回清理统计
+        Map<String, Object> result = new HashMap<>();
+        result.put("totalCount", totalCount);
+        result.put("invalidCount", invalidCount);
+        result.put("validCount", totalCount - invalidCount);
+        result.put("deletedPostIds", deletedPostIds);
+        result.put("timestamp", LocalDateTime.now());
+
+        return result;
+    }
+
     // ==================== 事务隔离的数据库操作辅助方法 ====================
 
-    @Transactional(readOnly = true, propagation = Propagation.REQUIRES_NEW, timeout = 5)
+    /**
+     * 根据URL查询内容（只读事务）
+     */
+    @Transactional(readOnly = true, propagation = Propagation.SUPPORTS)
     private Optional<XhsContent> findContentByUrl(String url) {
         return contentRepository.findByUrl(url);
     }
 
-    @Transactional(readOnly = true, propagation = Propagation.REQUIRES_NEW, timeout = 5)
+    /**
+     * 根据PostId查询内容（只读事务）
+     */
+    @Transactional(readOnly = true, propagation = Propagation.SUPPORTS)
     private Optional<XhsContent> findContentByPostId(String postId) {
         return contentRepository.findByPostId(postId);
     }
 
+    /**
+     * 保存内容（独立事务）
+     */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     private void saveContent(XhsContent content) {
         contentRepository.save(content);
     }
 
+    /**
+     * 删除内容（独立事务）
+     */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     private void deleteContent(XhsContent content) {
         contentRepository.delete(content);
     }
 
+    /**
+     * 根据URL删除旧内容并清理缓存（独立事务）
+     */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     private void deleteOldContentByUrl(String url, String cacheKey) {
         contentRepository.findByUrl(url).ifPresent(oldContent -> {

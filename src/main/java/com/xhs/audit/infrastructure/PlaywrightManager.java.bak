@@ -12,7 +12,6 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.stream.Collectors;
 
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.stereotype.Component;
@@ -30,11 +29,10 @@ import lombok.extern.slf4j.Slf4j;
  * Playwright浏览器实例池管理器
  *
  * 职责：
- * 1. 维护多个浏览器实例的生命周期（每个Browser完全独立）
- * 2. 每个Browser实例同一时刻只允许一个Page操作（避免CDP冲突）
- * 3. 等待队列机制，超出容量则等待或拒绝
- * 4. 空闲30秒自动释放浏览器实例
- * 5. 优雅关闭时释放所有资源
+ * 1. 维护单个浏览器实例的生命周期（单线程爬取，无并发冲突）
+ * 2. 等待队列机制，超出容量则等待或拒绝
+ * 3. 空闲自动释放浏览器实例
+ * 4. 优雅关闭时释放所有资源
  *
  * 使用示例：
  *
@@ -42,7 +40,7 @@ import lombok.extern.slf4j.Slf4j;
  * try {
  *     PlaywrightManager.PageWrapper page = manager.borrowPage();
  *     page.page.navigate("https://example.com");
- *     // 爬虫操作（所有CDP操作在Page上是串行的）
+ *     // 爬虫操作
  * } finally {
  *     manager.closePage(page);
  * }
@@ -52,12 +50,12 @@ import lombok.extern.slf4j.Slf4j;
 @Component
 public class PlaywrightManager implements DisposableBean {
 
-    private static final int POOL_SIZE = 10;
-    private static final long BORROW_TIMEOUT_SECONDS = 10;
+    private static final int POOL_SIZE = 1; // 单线程爬取，只需1个浏览器实例
+    private static final long BORROW_TIMEOUT_SECONDS = 30; // 降低到30秒，避免长时间阻塞
     private static final int MAX_FAILURES_THRESHOLD = 3;
-    private static final long IDLE_TIMEOUT_SECONDS = 30;
+    private static final long IDLE_TIMEOUT_SECONDS = 120; // 降低到2分钟，及时释放空闲资源
     private static final int WAITING_QUEUE_SIZE = 10000;
-    private static final long BROWSER_COOLDOWN_MS = 2000; // Browser 冷却时间
+    private static final long BROWSER_COOLDOWN_MS = 100; // 单线程场景，冷却时间可以更短
 
     @org.springframework.beans.factory.annotation.Value("${audit.crawler.headless:true}")
     private boolean headless;
@@ -441,8 +439,8 @@ public class PlaywrightManager implements DisposableBean {
                     if (request.result.get() == 1 && request.pageWrapper != null) {
                         return request.pageWrapper;
                     } else {
-                        throw new BrowserPoolExhaustedException(request.errorMessage != null ?
-                                request.errorMessage : "等待被中断");
+                        throw new BrowserPoolExhaustedException(
+                                request.errorMessage != null ? request.errorMessage : "等待被中断");
                     }
                 } else {
                     totalWaitTimeouts.incrementAndGet();
@@ -657,11 +655,17 @@ public class PlaywrightManager implements DisposableBean {
             // 1. 停止后台线程
             if (idleChecker != null) {
                 idleChecker.shutdown();
-                try { idleChecker.awaitTermination(3, TimeUnit.SECONDS); } catch (Exception ignored) {}
+                try {
+                    idleChecker.awaitTermination(3, TimeUnit.SECONDS);
+                } catch (Exception ignored) {
+                }
             }
             if (waiterProcessor != null) {
                 waiterProcessor.shutdown();
-                try { waiterProcessor.awaitTermination(3, TimeUnit.SECONDS); } catch (Exception ignored) {}
+                try {
+                    waiterProcessor.awaitTermination(3, TimeUnit.SECONDS);
+                } catch (Exception ignored) {
+                }
             }
 
             // 2. 唤醒所有等待请求

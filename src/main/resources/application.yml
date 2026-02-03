@@ -8,6 +8,14 @@ spring:
     username: postgres
     password: postgres
     driver-class-name: org.postgresql.Driver
+    hikari:
+      # 连接池配置 - 优化后的事务模型下，数据库操作时间短，适度扩容提供缓冲
+      maximum-pool-size: 20          # 最大连接数（从默认10扩展到20）
+      minimum-idle: 5                # 最小空闲连接数（降低至5以节省资源）
+      connection-timeout: 10000      # 连接超时时间（10秒，足够短时操作）
+      idle-timeout: 300000           # 空闲连接超时时间（5分钟）
+      max-lifetime: 1800000          # 连接最大生命周期（30分钟）
+      leak-detection-threshold: 60000  # 连接泄漏检测阈值（60秒，爬虫操作可能耗时较长）
   
   # JPA配置
   jpa:
@@ -93,10 +101,17 @@ audit:
     concurrent-crawl-threads: 3
     timeout-seconds: 30
     retry-times: 3
-    headless: false  # 是否使用无头浏览器（开发环境建议false，生产环境建议true）
+    headless: true  # 是否使用无头浏览器（开发环境建议false，生产环境建议true）
     delay-ms:
       min: 2000
       max: 5000
+    # Selenium Grid 配置
+    selenium:
+      grid-url: ${SELENIUM_GRID_URL:http://localhost:4444}  # Selenium Grid Hub 地址
+      pool-size: ${SELENIUM_POOL_SIZE:4}  # Driver 池大小，支持并发
+      page-load-timeout: 20  # 页面加载超时时间（秒）
+      implicit-wait: 5  # 隐式等待时间（秒）
+      mobile-mode: ${SELENIUM_MOBILE_MODE:true}  # 是否模拟移动设备
   
   # 线程池配置
   executor:
@@ -211,6 +226,7 @@ logging:
     root: INFO
     com.xhs.audit: DEBUG
     org.springframework.ai: DEBUG
+    org.apache.poi.openxml4j.opc.PackageRelationshipCollection: OFF
   pattern:
     console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
   file:

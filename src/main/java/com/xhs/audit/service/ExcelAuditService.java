@@ -3,9 +3,11 @@ package com.xhs.audit.service;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.URI;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -13,7 +15,9 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
+import org.apache.commons.validator.routines.UrlValidator;
 import org.apache.poi.ss.usermodel.BorderStyle;
 import org.apache.poi.ss.usermodel.Cell;
 import org.apache.poi.ss.usermodel.CellStyle;
@@ -28,7 +32,7 @@ import org.apache.poi.ss.usermodel.Workbook;
 import org.apache.poi.ss.usermodel.WorkbookFactory;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.core.io.ClassPathResource;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -38,6 +42,7 @@ import com.xhs.audit.model.entity.AuditResult;
 import com.xhs.audit.repository.AuditJobRepository;
 import com.xhs.audit.repository.AuditResultRepository;
 
+import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 
 /**
@@ -64,10 +69,26 @@ public class ExcelAuditService {
     private static final Pattern URL_PATTERN = Pattern.compile(
             "https?://(?:www\\.|m\\.)?(?:xiaohongshu\\.com/(?:explore|discovery/item)/[a-zA-Z0-9_-]+|xhs\\.com/[a-zA-Z0-9_-]+|xhslink\\.com/o/[a-zA-Z0-9]+)(?:\\?[^\\s\"\']*)?");
 
+    private static final UrlValidator URL_VALIDATOR = new UrlValidator(new String[] { "http", "https" },
+            UrlValidator.NO_FRAGMENTS);
+
+    private static final Set<String> DEFAULT_ALLOWED_HOSTS = Set.of(
+            "www.xiaohongshu.com",
+            "xiaohongshu.com",
+            "m.xiaohongshu.com",
+            "xhs.com",
+            "www.xhs.com",
+            "xhslink.com");
+
     private static final Pattern POST_ID_PATTERN = Pattern.compile(
             "/(?:explore|discovery/item)/([a-zA-Z0-9_-]+)");
 
     private static final long MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
+
+    @Value("${audit.excel.allowed-hosts:}")
+    private String allowedHostsProperty;
+
+    private Set<String> allowedHosts = new LinkedHashSet<>(DEFAULT_ALLOWED_HOSTS);
 
     /**
      * 处理Excel上传并创建审核任务
@@ -204,12 +225,51 @@ public class ExcelAuditService {
     private String extractUrl(String text) {
         Matcher matcher = URL_PATTERN.matcher(text);
         if (matcher.find()) {
-            String url = matcher.group();
-            // 清理尾部中文标点
-            url = url.replaceAll("[，。、；：]+$", "");
-            return url;
+            String url = matcher.group().trim();
+            // 清理包裹的引号和尾部标点，避免携带无效字符
+            url = url.replaceAll("^[\"'“”‘’\\s]+", "");
+            url = url.replaceAll("[\"'“”‘’，。、；：\\s]+$", "");
+            if (!url.isEmpty() && isValidUrl(url)) {
+                return url;
+            }
+            log.warn("忽略无效链接: {}", url);
         }
         return null;
+    }
+
+    @PostConstruct
+    private void configureAllowedHosts() {
+        if (allowedHostsProperty == null || allowedHostsProperty.isBlank()) {
+            return;
+        }
+
+        Set<String> parsedHosts = Arrays.stream(allowedHostsProperty.split(","))
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .map(String::toLowerCase)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+
+        if (!parsedHosts.isEmpty()) {
+            allowedHosts = parsedHosts;
+            log.info("Excel URL白名单已覆盖: {}", allowedHosts);
+        }
+    }
+
+    private boolean isValidUrl(String url) {
+        if (!URL_VALIDATOR.isValid(url)) {
+            return false;
+        }
+        try {
+            URI uri = URI.create(url);
+            return isAllowedHost(uri.getHost());
+        } catch (IllegalArgumentException ex) {
+            log.debug("URL解析失败: {}", url, ex);
+            return false;
+        }
+    }
+
+    private boolean isAllowedHost(String host) {
+        return host != null && allowedHosts.contains(host.toLowerCase());
     }
 
     /**
@@ -461,7 +521,8 @@ public class ExcelAuditService {
             Object dimensionObj = reason.get("dimension");
             Object reasonObj = reason.get("reason");
 
-            if (dimensionObj == null) continue;
+            if (dimensionObj == null)
+                continue;
 
             String dimension = dimensionObj.toString();
             String reasonText = reasonObj != null ? reasonObj.toString() : "";
@@ -519,9 +580,9 @@ public class ExcelAuditService {
 
             // 示例数据行（第5-7行）
             String[][] examples = {
-                { "1", "https://www.xiaohongshu.com/explore/6970bf6f000000000e03ce88", "示例：标准链接" },
-                { "2", "https://www.xiaohongshu.com/discovery/item/abc123def456", "示例：另一种格式" },
-                { "3", "https://xhslink.com/o/uEBlswi8i6", "示例：短链接" }
+                    { "1", "https://www.xiaohongshu.com/explore/6970bf6f000000000e03ce88", "示例：标准链接" },
+                    { "2", "https://www.xiaohongshu.com/discovery/item/abc123def456", "示例：另一种格式" },
+                    { "3", "https://xhslink.com/o/uEBlswi8i6", "示例：短链接" }
             };
 
             for (int i = 0; i < examples.length; i++) {
@@ -534,9 +595,9 @@ public class ExcelAuditService {
             }
 
             // 设置列宽
-            sheet.setColumnWidth(0, 10 * 256);  // 序号
-            sheet.setColumnWidth(1, 60 * 256);  // 链接
-            sheet.setColumnWidth(2, 25 * 256);  // 备注
+            sheet.setColumnWidth(0, 10 * 256); // 序号
+            sheet.setColumnWidth(1, 60 * 256); // 链接
+            sheet.setColumnWidth(2, 25 * 256); // 备注
 
             // 写入字节数组
             ByteArrayOutputStream outputStream = new ByteArrayOutputStream();

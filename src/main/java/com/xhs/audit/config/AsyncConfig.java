@@ -70,17 +70,17 @@ public class AsyncConfig {
 
     /**
      * 爬取专用线程池
-     * 单线程执行，避免CDP冲突
-     * 爬取完成后立即释放Browser实例
+     * ✅ Selenium 支持多线程并发 - 配置为4个线程，匹配 SeleniumManager 的 poolSize
+     * 相比 Playwright，Selenium 的 RemoteWebDriver 通过 HTTP 与 Grid 通信，完全支持并发
      */
     @Bean(name = "crawlExecutor")
     public Executor crawlExecutor() {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
 
-        // 单线程爬取，避免CDP冲突
-        executor.setCorePoolSize(1);
-        executor.setMaxPoolSize(1);
-        executor.setQueueCapacity(100);
+        // 多线程并发爬取，匹配 Selenium Grid 的浏览器实例数
+        executor.setCorePoolSize(4);
+        executor.setMaxPoolSize(4);
+        executor.setQueueCapacity(2000); // 增大队列容量以缓冲所有待爬取任务
         executor.setThreadNamePrefix("crawl-");
         executor.setKeepAliveSeconds(60);
         executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
@@ -88,8 +88,8 @@ public class AsyncConfig {
         executor.setAwaitTerminationSeconds(120);
 
         executor.initialize();
-        log.info("爬取专用线程池已初始化: corePoolSize={}, maxPoolSize={} (单线程，避免CDP冲突)",
-                1, 1);
+        log.info("爬取专用线程池已初始化: corePoolSize={}, maxPoolSize={}, queueCapacity={} (Selenium多线程并发)",
+                4, 4, 2000);
 
         return executor;
     }
@@ -106,7 +106,7 @@ public class AsyncConfig {
         // 多线程审核，支持并行处理
         executor.setCorePoolSize(5);
         executor.setMaxPoolSize(10);
-        executor.setQueueCapacity(100);
+        executor.setQueueCapacity(2000); // 与爬取队列容量匹配，避免审核任务积压
         executor.setThreadNamePrefix("audit-async-");
         executor.setKeepAliveSeconds(60);
         executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
@@ -114,8 +114,8 @@ public class AsyncConfig {
         executor.setAwaitTerminationSeconds(120);
 
         executor.initialize();
-        log.info("审核专用线程池已初始化: corePoolSize={}, maxPoolSize={} (多线程并行审核)",
-                5, 10);
+        log.info("审核专用线程池已初始化: corePoolSize={}, maxPoolSize={}, queueCapacity={} (多线程并行审核)",
+                5, 10, 2000);
 
         return executor;
     }

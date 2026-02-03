@@ -11,6 +11,7 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.xhs.audit.agent.ContentAuditAgent;
@@ -58,7 +59,6 @@ public class ContentAuditService {
      * @param forceRefresh 是否强制刷新（跳过缓存）
      * @return 爬取的内容
      */
-    @Transactional
     public XhsContent crawlContent(String url, boolean forceRefresh) {
         String postId = extractPostId(url);
         log.info("[爬取阶段] 开始: url={}, postId={}, forceRefresh={}", url, postId, forceRefresh);
@@ -91,7 +91,6 @@ public class ContentAuditService {
      * @param jobId   任务ID（批量审核时传入，单条审核可为null）
      * @return 审核决策
      */
-    @Transactional
     public AuditDecision auditContent(XhsContent content, String jobId) {
         String postId = content.getPostId();
         String url = content.getUrl();
@@ -100,7 +99,7 @@ public class ContentAuditService {
         try {
             // 1. 检查是否已审核
             log.debug("[审核阶段] 检查审核结果缓存: postId={}", postId);
-            Optional<AuditResult> existingResult = auditResultRepository.findFirstByPostIdOrderByAuditedAtDesc(postId);
+            Optional<AuditResult> existingResult = findLatestAuditResult(postId);
             if (existingResult.isPresent()) {
                 log.info("[审核阶段] 命中审核结果缓存，跳过重复审核: postId={}", postId);
                 return convertToDecision(existingResult.get());
@@ -133,7 +132,6 @@ public class ContentAuditService {
      * @param jobId        任务ID（批量审核时传入，单条审核可为null）
      * @return 审核决策
      */
-    @Transactional
     public AuditDecision auditContent(String url, boolean forceRefresh, String jobId) {
         try {
             log.info("[审核流程] 开始: url={}, forceRefresh={}, jobId={}", url, forceRefresh, jobId);
@@ -167,11 +165,12 @@ public class ContentAuditService {
     /**
      * 保存审核结果
      */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     private void saveAuditResult(AuditDecision decision, String url, String jobId) {
         AuditResult result = new AuditResult();
         result.setPostId(decision.getPostId());
         result.setUrl(url);
-        result.setJobId(jobId);  // 保存任务ID
+        result.setJobId(jobId); // 保存任务ID
         result.setAuditStatus(decision.getStatus());
         result.setReasons(AuditResultConverter.reasonsToList(decision.getReasons()));
         result.setConfidenceScore(
@@ -190,6 +189,11 @@ public class ContentAuditService {
      */
     private AuditDecision convertToDecision(AuditResult result) {
         return AuditResultConverter.toDecision(result);
+    }
+
+    @Transactional(readOnly = true, propagation = Propagation.SUPPORTS)
+    private Optional<AuditResult> findLatestAuditResult(String postId) {
+        return auditResultRepository.findFirstByPostIdOrderByAuditedAtDesc(postId);
     }
 
     /**
@@ -225,7 +229,8 @@ public class ContentAuditService {
         log.info("搜索审核结果: postId={}, jobId={}, status={}, startDate={}, endDate={}, page={}, size={}",
                 postId, jobId, status, startDate, endDate, pageable.getPageNumber(), pageable.getPageSize());
 
-        Page<Object[]> results = auditResultRepositoryCustom.searchResults(postId, jobId, status, startDate, endDate, pageable);
+        Page<Object[]> results = auditResultRepositoryCustom.searchResults(postId, jobId, status, startDate, endDate,
+                pageable);
 
         List<AuditResultItem> items = results.getContent().stream()
                 .map(this::convertToAuditResultItem)
@@ -286,7 +291,7 @@ public class ContentAuditService {
     /**
      * 将数据库查询结果转换为AuditResultItem
      * 查询结果列: post_id, job_id, url, audit_status, reasons,
-     *            confidence_score, model_name, audited_at
+     * confidence_score, model_name, audited_at
      */
     @SuppressWarnings("unchecked")
     private AuditResultItem convertToAuditResultItem(Object[] row) {

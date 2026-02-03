@@ -13,7 +13,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import com.xhs.audit.infrastructure.PlaywrightManager;
+import com.xhs.audit.infrastructure.SeleniumManager;
 import com.xhs.audit.model.dto.ApiResponse;
 
 import lombok.extern.slf4j.Slf4j;
@@ -36,7 +36,7 @@ public class HealthController {
     private RedisConnectionFactory redisConnectionFactory;
 
     @Autowired
-    private PlaywrightManager playwrightManager;
+    private SeleniumManager seleniumManager;
 
     /**
      * GET /api/v1/audit/health - 健康检查
@@ -60,8 +60,8 @@ public class HealthController {
             components.put("redis", checkRedis());
         }
 
-        // Playwright检查
-        components.put("playwright", checkPlaywright());
+        // Selenium检查
+        components.put("selenium", checkSelenium());
 
         health.put("components", components);
 
@@ -117,18 +117,16 @@ public class HealthController {
     }
 
     /**
-     * 检查Playwright状态
+     * 检查Selenium Grid状态
      */
-    private Map<String, Object> checkPlaywright() {
+    private Map<String, Object> checkSelenium() {
         Map<String, Object> status = new HashMap<>();
         try {
-            // 简单检查（生产环境应该有更详细的检查）
+            String stats = seleniumManager.getStats();
             status.put("status", "UP");
-            status.put("details", Map.of(
-                    "browsers", "3/3",
-                    "activeJobs", 0));
+            status.put("details", Map.of("stats", stats));
         } catch (Exception e) {
-            log.error("Playwright健康检查失败", e);
+            log.error("Selenium健康检查失败", e);
             status.put("status", "DOWN");
             status.put("error", e.getMessage());
         }

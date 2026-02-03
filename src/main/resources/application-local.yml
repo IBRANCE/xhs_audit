@@ -107,6 +107,11 @@ audit:
     # 图片审核通过的关键词（用于判断结果）
     image-pass-keywords: "天籁|轩逸|逍客|奇骏|N7|探陆|ARIYA|启辰|英菲尼迪|QX50|QX60|Q50L|NISSAN|Venucia|INFINITI"
 
+  # 爬虫配置（覆盖默认配置）
+  crawler:
+    selenium:
+      mobile-mode: true  # 本地开发环境使用移动模式
+
 # 开发环境日志级别
 logging:
   level:

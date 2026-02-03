@@ -20,7 +20,7 @@
     <properties>
         <java.version>21</java.version>
         <spring-ai.version>1.0.0-M5</spring-ai.version>
-        <playwright.version>1.48.0</playwright.version>
+        <selenium.version>4.40.0</selenium.version>
         <resilience4j.version>2.1.0</resilience4j.version>
         <micrometer.version>1.14.0</micrometer.version>
     </properties>
@@ -108,11 +108,18 @@
             </exclusions>
         </dependency>
 
-        <!-- Playwright (浏览器自动化) -->
+        <!-- Selenium WebDriver (浏览器自动化) -->
         <dependency>
-            <groupId>com.microsoft.playwright</groupId>
-            <artifactId>playwright</artifactId>
-            <version>${playwright.version}</version>
+            <groupId>org.seleniumhq.selenium</groupId>
+            <artifactId>selenium-java</artifactId>
+            <version>${selenium.version}</version>
+        </dependency>
+
+        <!-- Selenium Grid Remote Driver -->
+        <dependency>
+            <groupId>org.seleniumhq.selenium</groupId>
+            <artifactId>selenium-remote-driver</artifactId>
+            <version>${selenium.version}</version>
         </dependency>
 
         <!-- Apache POI (Excel处理) -->
@@ -120,6 +127,13 @@
             <groupId>org.apache.poi</groupId>
             <artifactId>poi-ooxml</artifactId>
             <version>5.1.0</version>
+        </dependency>
+
+        <!-- Apache Commons Validator (URL校验) -->
+        <dependency>
+            <groupId>commons-validator</groupId>
+            <artifactId>commons-validator</artifactId>
+            <version>1.7</version>
         </dependency>
 
         <!-- Resilience4j (熔断/重试) -->

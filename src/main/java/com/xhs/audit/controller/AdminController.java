@@ -37,27 +37,27 @@ public class AdminController {
     @Qualifier("textChatClient")
     private ChatClient textChatClient;
 
-    /**
-     * 清理数据库中的无效内容
-     * 扫描所有内容记录，删除不符合验证规则的数据
+    // 暂时注释掉，等待实现 cleanInvalidContents 方法
+    /*
+     * @PostMapping("/clean-invalid-contents")
+     * 
+     * @Operation(summary = "清理无效内容", description = "扫描并删除数据库中不符合验证规则的无效内容记录")
+     * public ResponseEntity<Map<String, Object>> cleanInvalidContents() {
+     * log.info("[管理接口] 收到清理无效内容请求");
+     * 
+     * try {
+     * Map<String, Object> result = crawlerService.cleanInvalidContents();
+     * log.info("[管理接口] 清理完成: {}", result);
+     * return ResponseEntity.ok(result);
+     * } catch (Exception e) {
+     * log.error("[管理接口] 清理失败", e);
+     * return ResponseEntity.internalServerError()
+     * .body(Map.of(
+     * "error", "清理失败",
+     * "message", e.getMessage()));
+     * }
+     * }
      */
-    @PostMapping("/clean-invalid-contents")
-    @Operation(summary = "清理无效内容", description = "扫描并删除数据库中不符合验证规则的无效内容记录")
-    public ResponseEntity<Map<String, Object>> cleanInvalidContents() {
-        log.info("[管理接口] 收到清理无效内容请求");
-
-        try {
-            Map<String, Object> result = crawlerService.cleanInvalidContents();
-            log.info("[管理接口] 清理完成: {}", result);
-            return ResponseEntity.ok(result);
-        } catch (Exception e) {
-            log.error("[管理接口] 清理失败", e);
-            return ResponseEntity.internalServerError()
-                    .body(Map.of(
-                            "error", "清理失败",
-                            "message", e.getMessage()));
-        }
-    }
 
     /**
      * 测试AI模型连接
