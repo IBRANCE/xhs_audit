@@ -108,7 +108,7 @@ audit:
     # Selenium Grid 配置
     selenium:
       grid-url: ${SELENIUM_GRID_URL:http://localhost:4444}  # Selenium Grid Hub 地址
-      pool-size: ${SELENIUM_POOL_SIZE:4}  # Driver 池大小，支持并发
+      pool-size: ${SELENIUM_POOL_SIZE:8}  # Driver 池大小，支持并发（从4扩容到8）
       page-load-timeout: 20  # 页面加载超时时间（秒）
       implicit-wait: 5  # 隐式等待时间（秒）
       mobile-mode: ${SELENIUM_MOBILE_MODE:true}  # 是否模拟移动设备

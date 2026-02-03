@@ -70,16 +70,16 @@ public class AsyncConfig {
 
     /**
      * 爬取专用线程池
-     * ✅ Selenium 支持多线程并发 - 配置为4个线程，匹配 SeleniumManager 的 poolSize
+     * ✅ Selenium 支持多线程并发 - 配置为8个线程，匹配 SeleniumManager 的 poolSize
      * 相比 Playwright，Selenium 的 RemoteWebDriver 通过 HTTP 与 Grid 通信，完全支持并发
      */
     @Bean(name = "crawlExecutor")
     public Executor crawlExecutor() {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
 
-        // 多线程并发爬取，匹配 Selenium Grid 的浏览器实例数
-        executor.setCorePoolSize(4);
-        executor.setMaxPoolSize(4);
+        // 多线程并发爬取，匹配 Selenium Grid 的浏览器实例数（从4扩容到8）
+        executor.setCorePoolSize(8);
+        executor.setMaxPoolSize(8);
         executor.setQueueCapacity(2000); // 增大队列容量以缓冲所有待爬取任务
         executor.setThreadNamePrefix("crawl-");
         executor.setKeepAliveSeconds(60);
@@ -89,7 +89,7 @@ public class AsyncConfig {
 
         executor.initialize();
         log.info("爬取专用线程池已初始化: corePoolSize={}, maxPoolSize={}, queueCapacity={} (Selenium多线程并发)",
-                4, 4, 2000);
+                8, 8, 2000);
 
         return executor;
     }

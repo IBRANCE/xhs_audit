@@ -114,6 +114,98 @@ services:
     networks:
       - selenium-grid
 
+  # Firefox Node 5
+  firefox-node-5:
+    image: docker.1ms.run/selenium/node-firefox:latest
+    container_name: firefox-node-5
+    platform: linux/arm64
+    ports:
+      - "7904:7900"  # noVNC端口 - 浏览器访问
+      - "5904:5900"  # VNC端口 - VNC客户端访问
+    depends_on:
+      - selenium-hub
+    environment:
+      - SE_EVENT_BUS_HOST=selenium-hub
+      - SE_EVENT_BUS_PUBLISH_PORT=4442
+      - SE_EVENT_BUS_SUBSCRIBE_PORT=4443
+      - SE_NODE_MAX_SESSIONS=1
+      - SE_NODE_SESSION_TIMEOUT=300
+      - SE_VNC_NO_PASSWORD=1
+      - SE_SCREEN_WIDTH=1920
+      - SE_SCREEN_HEIGHT=1080
+    shm_size: 2gb
+    networks:
+      - selenium-grid
+
+  # Firefox Node 6
+  firefox-node-6:
+    image: docker.1ms.run/selenium/node-firefox:latest
+    container_name: firefox-node-6
+    platform: linux/arm64
+    ports:
+      - "7905:7900"  # noVNC端口 - 浏览器访问
+      - "5905:5900"  # VNC端口 - VNC客户端访问
+    depends_on:
+      - selenium-hub
+    environment:
+      - SE_EVENT_BUS_HOST=selenium-hub
+      - SE_EVENT_BUS_PUBLISH_PORT=4442
+      - SE_EVENT_BUS_SUBSCRIBE_PORT=4443
+      - SE_NODE_MAX_SESSIONS=1
+      - SE_NODE_SESSION_TIMEOUT=300
+      - SE_VNC_NO_PASSWORD=1
+      - SE_SCREEN_WIDTH=1920
+      - SE_SCREEN_HEIGHT=1080
+    shm_size: 2gb
+    networks:
+      - selenium-grid
+
+  # Firefox Node 7
+  firefox-node-7:
+    image: docker.1ms.run/selenium/node-firefox:latest
+    container_name: firefox-node-7
+    platform: linux/arm64
+    ports:
+      - "7906:7900"  # noVNC端口 - 浏览器访问
+      - "5906:5900"  # VNC端口 - VNC客户端访问
+    depends_on:
+      - selenium-hub
+    environment:
+      - SE_EVENT_BUS_HOST=selenium-hub
+      - SE_EVENT_BUS_PUBLISH_PORT=4442
+      - SE_EVENT_BUS_SUBSCRIBE_PORT=4443
+      - SE_NODE_MAX_SESSIONS=1
+      - SE_NODE_SESSION_TIMEOUT=300
+      - SE_VNC_NO_PASSWORD=1
+      - SE_SCREEN_WIDTH=1920
+      - SE_SCREEN_HEIGHT=1080
+    shm_size: 2gb
+    networks:
+      - selenium-grid
+
+  # Firefox Node 8
+  firefox-node-8:
+    image: docker.1ms.run/selenium/node-firefox:latest
+    container_name: firefox-node-8
+    platform: linux/arm64
+    ports:
+      - "7907:7900"  # noVNC端口 - 浏览器访问
+      - "5907:5900"  # VNC端口 - VNC客户端访问
+    depends_on:
+      - selenium-hub
+    environment:
+      - SE_EVENT_BUS_HOST=selenium-hub
+      - SE_EVENT_BUS_PUBLISH_PORT=4442
+      - SE_EVENT_BUS_SUBSCRIBE_PORT=4443
+      - SE_NODE_MAX_SESSIONS=1
+      - SE_NODE_SESSION_TIMEOUT=300
+      - SE_VNC_NO_PASSWORD=1
+      - SE_SCREEN_WIDTH=1920
+      - SE_SCREEN_HEIGHT=1080
+    shm_size: 2gb
+    networks:
+      - selenium-grid
+
 networks:
   selenium-grid:
     driver: bridge
