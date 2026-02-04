@@ -1,0 +1,86 @@
+# 爬虫 Worker 专用配置（生产环境）
+# 启动命令: java -jar xhs-audit.jar --spring.profiles.active=crawler
+
+spring:
+  profiles:
+    active: crawler
+  
+  # 数据库配置（共享）
+  datasource:
+    url: ${DATABASE_URL:jdbc:postgresql://postgres:5432/xhs_audit}
+    username: ${DATABASE_USER:postgres}
+    password: ${DATABASE_PASSWORD:postgres}
+    hikari:
+      maximum-pool-size: 30
+      minimum-idle: 10
+  
+  # Redis配置（共享）
+  data:
+    redis:
+      host: ${REDIS_HOST:redis}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      stream:
+        batch-size: 20  # 爬虫 Worker 增加批量消费
+        block-ms: 2000
+        pending-retry-interval-ms: 60000
+        max-retry-attempts: 3
+
+# 审核系统配置
+audit:
+  # Worker 配置
+  worker:
+    enabled: true
+    type: crawler-worker  # 只启动爬虫 Worker
+    consumer-name-prefix: ${HOSTNAME:crawler-node}
+  
+  # 分布式锁配置
+  lock:
+    wait-time-seconds: 30    # 等待获取锁的时间
+    lease-time-seconds: 120  # 锁的持有时间
+  
+  # 布隆过滤器（启用）
+  bloom-filter:
+    enabled: true
+    expected-insertions: 1000000  # 生产环境预期 100 万条
+    false-positive-probability: 0.01
+  
+  # 爬虫配置
+  crawler:
+    browser-pool-size: 5
+    concurrent-crawl-threads: 5
+    timeout-seconds: 30
+    retry-times: 3
+    headless: true
+    selenium:
+      grid-url: ${SELENIUM_GRID_URL:http://selenium-hub:4444}
+      pool-size: 10  # 生产环境扩容
+      page-load-timeout: 20
+      implicit-wait: 5
+      mobile-mode: true
+  
+  # 线程池配置
+  executor:
+    crawl-pool-size: 10
+    crawl-queue-capacity: 5000
+
+# 日志配置
+logging:
+  level:
+    root: INFO
+    com.xhs.audit.worker.CrawlerWorker: DEBUG
+    com.xhs.audit.infrastructure.CrawlDuplicateFilter: DEBUG
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+
+# Actuator 监控
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics,prometheus
+  metrics:
+    tags:
+      application: ${spring.application.name}
+      worker-type: crawler
+      node: ${HOSTNAME:crawler-node}

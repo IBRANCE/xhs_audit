@@ -39,6 +39,8 @@ import com.xhs.audit.model.dto.AuditDecision;
 import com.xhs.audit.model.entity.XhsContent;
 
 import lombok.extern.slf4j.Slf4j;
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
+import io.github.resilience4j.retry.annotation.Retry;
 
 import java.time.Duration;
 
@@ -97,8 +99,7 @@ public class ContentAuditAgent {
         this.objectMapper.registerModule(new JavaTimeModule());
 
         this.visionRestTemplate = new RestTemplate();
-        org.springframework.http.client.HttpComponentsClientHttpRequestFactory factory =
-            new org.springframework.http.client.HttpComponentsClientHttpRequestFactory();
+        org.springframework.http.client.HttpComponentsClientHttpRequestFactory factory = new org.springframework.http.client.HttpComponentsClientHttpRequestFactory();
         factory.setConnectTimeout(30000);
         visionRestTemplate.setRequestFactory(factory);
 
@@ -109,10 +110,13 @@ public class ContentAuditAgent {
 
     /**
      * 审核单个小红书内容 - 并行处理文本和图片
+     * v4.0: 添加断路器和重试保护
      *
      * @param content 爬取的小红书内容
      * @return 审核决策
      */
+    @CircuitBreaker(name = "llmService", fallbackMethod = "auditContentFallback")
+    @Retry(name = "llmService")
     public AuditDecision auditContent(XhsContent content) {
         try {
             log.info("[Agent审核] 开始AI审核: postId={}, title={}", content.getPostId(), content.getTitle());
@@ -174,7 +178,8 @@ public class ContentAuditAgent {
             return responseText;
         } catch (Exception e) {
             log.error("[Agent审核] 文本审核失败: {}", e.getMessage());
-            return "{\"status\":\"UNCERTAIN\",\"reasons\":[{\"dimension\":\"text\",\"reason\":\"" + e.getMessage() + "\",\"severity\":\"MEDIUM\"}]}";
+            return "{\"status\":\"UNCERTAIN\",\"reasons\":[{\"dimension\":\"text\",\"reason\":\"" + e.getMessage()
+                    + "\",\"severity\":\"MEDIUM\"}]}";
         }
     }
 
@@ -220,7 +225,8 @@ public class ContentAuditAgent {
         if (decision.getReasons() != null && !decision.getReasons().isEmpty()) {
             log.info("[Agent审核] 驳回原因:");
             for (AuditDecision.RejectReason reason : decision.getReasons()) {
-                log.info("[Agent审核]   - [{}] {} (severity: {})", reason.getDimension(), reason.getReason(), reason.getSeverity());
+                log.info("[Agent审核]   - [{}] {} (severity: {})", reason.getDimension(), reason.getReason(),
+                        reason.getSeverity());
             }
         }
         log.info("[Agent审核] ========================");
@@ -407,8 +413,7 @@ public class ContentAuditAgent {
                     apiUrl,
                     HttpMethod.POST,
                     entity,
-                    String.class
-            );
+                    String.class);
 
             // 解析响应
             String result = "";
@@ -433,6 +438,7 @@ public class ContentAuditAgent {
 
     /**
      * 下载并压缩图片（带Redis缓存）
+     * 
      * @param imageUrl 图片URL
      * @return 压缩后的图片字节数组
      */
@@ -506,7 +512,8 @@ public class ContentAuditAgent {
             }
 
             BufferedImage resizedImage = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
-            resizedImage.getGraphics().drawImage(originalImage.getScaledInstance(width, height, java.awt.Image.SCALE_SMOOTH), 0, 0, null);
+            resizedImage.getGraphics()
+                    .drawImage(originalImage.getScaledInstance(width, height, java.awt.Image.SCALE_SMOOTH), 0, 0, null);
 
             ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
             ImageIO.write(resizedImage, "jpg", outputStream);
@@ -521,7 +528,7 @@ public class ContentAuditAgent {
     }
 
     /**
-     * 检测图片的MIME类型
+     * detectMimeType - 检测图片MIME类型
      */
     private String detectMimeType(byte[] bytes) {
         if (bytes.length < 4) {
@@ -542,5 +549,15 @@ public class ContentAuditAgent {
         }
 
         return "image/jpeg";
+    }
+
+    /**
+     * v4.0: 断路器 Fallback 方法
+     * 当 LLM 服务不可用时返回 UNCERTAIN 状态
+     */
+    private AuditDecision auditContentFallback(XhsContent content, Throwable t) {
+        log.error("[Agent审核降级] postId={}, error={}", content.getPostId(), t.getMessage());
+        return AuditDecision.uncertain(content.getPostId(),
+                "LLM服务暂时不可用，请稍后重试: " + t.getMessage());
     }
 }

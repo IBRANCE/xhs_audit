@@ -7,7 +7,14 @@ import java.util.Map;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
-import jakarta.persistence.*;
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.GenerationType;
+import jakarta.persistence.Id;
+import jakarta.persistence.Index;
+import jakarta.persistence.PreUpdate;
+import jakarta.persistence.Table;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -32,7 +39,7 @@ public class XhsContent {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(nullable = false, unique = true, length = 100)
+    @Column(nullable = false, unique = true, length = 256)
     private String postId;
 
     @Column(nullable = false, length = 500)
@@ -53,7 +60,7 @@ public class XhsContent {
     @JdbcTypeCode(SqlTypes.JSON)
     private Map<String, Object> metadata;
 
-    @Column(length = 100)
+    @Column(length = 256)
     private String authorId;
 
     private LocalDateTime publishedAt;

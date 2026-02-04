@@ -1,0 +1,98 @@
+# 审核 Worker 专用配置（生产环境）
+# 启动命令: java -jar xhs-audit.jar --spring.profiles.active=audit
+
+spring:
+  profiles:
+    active: audit
+  
+  # 数据库配置（共享）
+  datasource:
+    url: ${DATABASE_URL:jdbc:postgresql://postgres:5432/xhs_audit}
+    username: ${DATABASE_USER:postgres}
+    password: ${DATABASE_PASSWORD:postgres}
+    hikari:
+      maximum-pool-size: 30
+      minimum-idle: 10
+  
+  # Redis配置（共享）
+  data:
+    redis:
+      host: ${REDIS_HOST:redis}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      stream:
+        batch-size: 15  # 审核 Worker 批量消费
+        block-ms: 2000
+        pending-retry-interval-ms: 60000
+        max-retry-attempts: 3
+  
+  # Spring AI配置
+  ai:
+    openai:
+      api-key: ${OPENAI_API_KEY}
+      base-url: ${OPENAI_BASE_URL:http://llm-service:1234/v1}
+      chat:
+        model: ${OPENAI_CHAT_MODEL:qwen/qwen3-4b}
+        temperature: 0.3
+        max-tokens: 2000
+      vision:
+        model: ${OPENAI_VISION_MODEL:zai-org/glm-4.6v-flash}
+        temperature: 0.3
+        max-tokens: 2000
+
+# 审核系统配置
+audit:
+  # Worker 配置
+  worker:
+    enabled: true
+    type: audit-worker  # 只启动审核 Worker
+    consumer-name-prefix: ${HOSTNAME:audit-node}
+  
+  # 分布式锁配置
+  lock:
+    wait-time-seconds: 30    # 等待获取锁的时间
+    lease-time-seconds: 120  # 锁的持有时间
+  
+  # 布隆过滤器（审核 Worker 不需要）
+  bloom-filter:
+    enabled: false
+  
+  # 线程池配置
+  executor:
+    audit-core-pool-size: 15
+    audit-max-pool-size: 30
+    audit-queue-capacity: 5000
+  
+  # LLM调用配置
+  llm:
+    timeout-seconds: 60  # 审核可能需要更长时间
+    max-retries: 3
+    retry-delay-ms: 2000
+  
+  # Vision配置
+  vision:
+    enabled: true
+    provider: local-vision
+    max-image-size: 20971520
+    request-timeout: 60
+
+# 日志配置
+logging:
+  level:
+    root: INFO
+    com.xhs.audit.worker.AuditWorker: DEBUG
+    com.xhs.audit.agent.ContentAuditAgent: DEBUG
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+
+# Actuator 监控
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics,prometheus
+  metrics:
+    tags:
+      application: ${spring.application.name}
+      worker-type: audit
+      node: ${HOSTNAME:audit-node}

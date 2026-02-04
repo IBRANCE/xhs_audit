@@ -1,7 +1,0 @@
-### 测试AI模型连接
-POST http://localhost:8080/api/admin/test-ai
-Content-Type: application/json
-
-{
-  "message": "你好，这是一个测试消息"
-}

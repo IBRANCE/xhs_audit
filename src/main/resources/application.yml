@@ -9,13 +9,13 @@ spring:
     password: postgres
     driver-class-name: org.postgresql.Driver
     hikari:
-      # 连接池配置 - 优化后的事务模型下，数据库操作时间短，适度扩容提供缓冲
-      maximum-pool-size: 20          # 最大连接数（从默认10扩展到20）
-      minimum-idle: 5                # 最小空闲连接数（降低至5以节省资源）
-      connection-timeout: 10000      # 连接超时时间（10秒，足够短时操作）
+      # 连接池配置 - v4.0: 扩容以支持更高并发
+      maximum-pool-size: 30          # v4.0: 从 20 扩容到 30
+      minimum-idle: 10               # v4.0: 从 5 提升到 10
+      connection-timeout: 5000       # v4.0: 从 10s 降低到 5s
       idle-timeout: 300000           # 空闲连接超时时间（5分钟）
       max-lifetime: 1800000          # 连接最大生命周期（30分钟）
-      leak-detection-threshold: 60000  # 连接泄漏检测阈值（60秒，爬虫操作可能耗时较长）
+      leak-detection-threshold: 60000  # 连接泄漏检测阈值（60秒）
   
   # JPA配置
   jpa:
@@ -29,15 +29,23 @@ spring:
     show-sql: false
   
   # Redis配置
-  redis:
-    host: localhost
-    port: 6379
-    timeout: 2000ms
-    lettuce:
-      pool:
-        max-active: 16
-        max-idle: 8
-        min-idle: 4
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      # password: ${REDIS_PASSWORD:}  # 本地 Redis 无密码，注释此行
+      timeout: 2000ms
+      lettuce:
+        pool:
+          max-active: 20      # v4.0: 从 16 扩容到 20
+          max-idle: 10
+          min-idle: 4
+      stream:
+        # v4.0: Redis Stream 配置
+        batch-size: 10        # 每次消费消息数
+        block-ms: 2000        # 阻塞等待时间
+        pending-retry-interval-ms: 60000  # Pending 消息回收间隔
+        max-retry-attempts: 3  # 最大重试次数
   
   # Cache配置
   cache:
@@ -88,6 +96,7 @@ spring:
 
 # 服务器配置
 server:
+  address: 0.0.0.0
   port: 8080
   servlet:
     context-path: /
@@ -95,6 +104,18 @@ server:
 
 # 审核系统配置
 audit:
+  # v4.0: Worker 配置
+  worker:
+    enabled: true
+    type: ${WORKER_TYPE:both}  # api / crawler-worker / audit-worker / both
+    consumer-name-prefix: ${HOSTNAME:local}
+  
+  # v4.0: 布隆过滤器配置（可选，用于 URL 去重）
+  bloom-filter:
+    enabled: ${BLOOM_FILTER_ENABLED:false}  # 默认关闭，生产环境建议开启
+    expected-insertions: 100000  # 预期 URL 数量
+    false-positive-probability: 0.01  # 误判率 1%
+  
   # 爬虫配置
   crawler:
     browser-pool-size: 3
@@ -113,13 +134,22 @@ audit:
       implicit-wait: 5  # 隐式等待时间（秒）
       mobile-mode: ${SELENIUM_MOBILE_MODE:true}  # 是否模拟移动设备
   
-  # 线程池配置
+  # 线程池配置 - v4.0: 扩容
   executor:
     core-pool-size: 10
     max-pool-size: 50
     queue-capacity: 1000
     keep-alive-seconds: 60
     await-termination-seconds: 300
+    # v4.0: 爬取线程池（保持与 Selenium poolSize 一致）
+    crawl-pool-size: 8
+    crawl-queue-capacity: 2000
+    # v4.0: 审核线程池（扩容到 20）
+    audit-core-pool-size: 10
+    audit-max-pool-size: 20
+    audit-queue-capacity: 2000
+    # v4.0: Redis Stream 消费者线程池
+    stream-consumer-threads: 4
   
   # Excel配置
   excel:
@@ -244,13 +274,50 @@ management:
     health:
       show-details: always
   metrics:
+    export:
+      prometheus:
+        enabled: true
     tags:
       application: xhs-audit
+      environment: ${SPRING_PROFILES_ACTIVE:dev}
     distribution:
       percentiles-histogram:
         audit.duration: true
         crawler.duration: true
         llm.duration: true
+        http.server.requests: true
+        audit.processing.duration: true
+
+# v4.0: Resilience4j 熔断与重试配置
+resilience4j:
+  circuitbreaker:
+    instances:
+      llmService:
+        failure-rate-threshold: 50          # 失败率超过 50% 开路
+        slow-call-rate-threshold: 80        # 慢调用超过 80% 开路
+        slow-call-duration-threshold: 30s   # 超过 30s 视为慢调用
+        wait-duration-in-open-state: 30s    # 开路后等待 30s
+        permitted-number-of-calls-in-half-open-state: 5
+        sliding-window-size: 10
+        minimum-number-of-calls: 5
+        automatic-transition-from-open-to-half-open-enabled: true
+  
+  retry:
+    instances:
+      llmService:
+        max-attempts: 3
+        wait-duration: 2s
+        exponential-backoff-multiplier: 2
+        retry-exceptions:
+          - org.springframework.web.client.ResourceAccessException
+          - java.util.concurrent.TimeoutException
+
+# v4.0: Redisson 配置
+redisson:
+  address: redis://${REDIS_HOST:localhost}:${REDIS_PORT:6379}
+  password: ${REDIS_PASSWORD:}
+  connection-pool-size: 10
+  connection-minimum-idle-size: 5
 # Springdoc OpenAPI配置
 springdoc:
   api-docs:

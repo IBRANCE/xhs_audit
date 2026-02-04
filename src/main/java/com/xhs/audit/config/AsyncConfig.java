@@ -1,13 +1,23 @@
 package com.xhs.audit.config;
 
+import static com.xhs.audit.config.RedisStreamConstants.AUDIT_GROUP;
+import static com.xhs.audit.config.RedisStreamConstants.AUDIT_STREAM;
+import static com.xhs.audit.config.RedisStreamConstants.CRAWL_GROUP;
+import static com.xhs.audit.config.RedisStreamConstants.CRAWL_STREAM;
+
 import java.util.concurrent.Executor;
 import java.util.concurrent.ThreadPoolExecutor;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.data.redis.connection.stream.ReadOffset;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.EnableAsync;
+import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
+import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 
 /**
@@ -20,7 +30,11 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 @Configuration
 @EnableAsync
+@EnableScheduling // v4.0: 启用定时任务（Pending 消息回收）
 public class AsyncConfig {
+
+    @Autowired
+    private StringRedisTemplate redisTemplate;
 
     /**
      * 异步任务线程池
@@ -96,6 +110,7 @@ public class AsyncConfig {
 
     /**
      * 审核专用线程池
+     * v4.0: 扩容到 20 个最大线程
      * 多线程并行处理审核任务
      * 爬取阶段使用crawlExecutor，审核阶段使用此线程池
      */
@@ -103,9 +118,9 @@ public class AsyncConfig {
     public Executor auditTaskExecutor() {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
 
-        // 多线程审核，支持并行处理
-        executor.setCorePoolSize(5);
-        executor.setMaxPoolSize(10);
+        // v4.0: 扩容到 20 个线程以支持更高并发
+        executor.setCorePoolSize(10);
+        executor.setMaxPoolSize(20); // v4.0: 从 10 扩容到 20
         executor.setQueueCapacity(2000); // 与爬取队列容量匹配，避免审核任务积压
         executor.setThreadNamePrefix("audit-async-");
         executor.setKeepAliveSeconds(60);
@@ -114,9 +129,53 @@ public class AsyncConfig {
         executor.setAwaitTerminationSeconds(120);
 
         executor.initialize();
-        log.info("审核专用线程池已初始化: corePoolSize={}, maxPoolSize={}, queueCapacity={} (多线程并行审核)",
-                5, 10, 2000);
+        log.info("审核专用线程池已初始化: corePoolSize={}, maxPoolSize={}, queueCapacity={} (v4.0扩容)",
+                10, 20, 2000);
 
         return executor;
+    }
+
+    /**
+     * v4.0: Redis Stream 消费者线程池
+     * 用于执行 Stream 消费者任务
+     */
+    @Bean(name = "streamConsumerExecutor")
+    public ThreadPoolTaskExecutor streamConsumerExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(2);
+        executor.setMaxPoolSize(5);
+        executor.setQueueCapacity(100);
+        executor.setThreadNamePrefix("stream-consumer-");
+        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
+        executor.setWaitForTasksToCompleteOnShutdown(true);
+        executor.setAwaitTerminationSeconds(30);
+        executor.initialize();
+
+        log.info("Redis Stream 消费者线程池已初始化: corePoolSize={}, maxPoolSize={}",
+                2, 5);
+
+        return executor;
+    }
+
+    /**
+     * v4.0: 初始化 Redis Stream 消费者组
+     */
+    @PostConstruct
+    public void initRedisStreamGroups() {
+        try {
+            // 创建爬虫消费者组
+            redisTemplate.opsForStream().createGroup(CRAWL_STREAM, ReadOffset.from("0"), CRAWL_GROUP);
+            log.info("[RedisStream] 爬虫消费者组已创建: {}", CRAWL_GROUP);
+        } catch (Exception e) {
+            log.info("[RedisStream] 爬虫消费者组已存在或创建失败: {}", e.getMessage());
+        }
+
+        try {
+            // 创建审核消费者组
+            redisTemplate.opsForStream().createGroup(AUDIT_STREAM, ReadOffset.from("0"), AUDIT_GROUP);
+            log.info("[RedisStream] 审核消费者组已创建: {}", AUDIT_GROUP);
+        } catch (Exception e) {
+            log.info("[RedisStream] 审核消费者组已存在或创建失败: {}", e.getMessage());
+        }
     }
 }

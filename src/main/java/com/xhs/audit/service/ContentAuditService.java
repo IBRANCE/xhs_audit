@@ -51,6 +51,9 @@ public class ContentAuditService {
     @Autowired
     private AuditResultRepositoryCustom auditResultRepositoryCustom;
 
+    @Autowired
+    private com.xhs.audit.repository.AuditJobRepository auditJobRepository;
+
     /**
      * 爬取内容（流水线第一阶段）
      * 从缓存或爬虫获取内容
@@ -114,6 +117,12 @@ public class ContentAuditService {
             // 3. 保存审核结果
             log.debug("[审核阶段] 保存审核结果到数据库: postId={}, jobId={}", postId, jobId);
             saveAuditResult(decision, url, jobId);
+
+            // 4. 更新任务计数（如果有jobId）
+            if (jobId != null) {
+                updateJobProgress(jobId, decision.getStatus());
+                checkAndUpdateJobCompletion(jobId);
+            }
 
             log.info("[审核阶段完成] postId={}, status={}, jobId={}", postId, decision.getStatus(), jobId);
             return decision;
@@ -194,6 +203,76 @@ public class ContentAuditService {
     @Transactional(readOnly = true, propagation = Propagation.SUPPORTS)
     private Optional<AuditResult> findLatestAuditResult(String postId) {
         return auditResultRepository.findFirstByPostIdOrderByAuditedAtDesc(postId);
+    }
+
+    /**
+     * 更新任务进度（增加完成计数和成功/失败计数）
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    private void updateJobProgress(String jobId, String auditStatus) {
+        try {
+            auditJobRepository.findByJobId(jobId).ifPresent(job -> {
+                // 增加完成计数
+                job.incrementCompletedCount();
+
+                // 根据审核状态增加成功或失败计数
+                if ("PASSED".equals(auditStatus)) {
+                    job.incrementSuccessCount();
+                    log.debug("审核通过: jobId={}, 通过数={}", jobId, job.getSuccessCount());
+                } else if ("REJECTED".equals(auditStatus)) {
+                    job.incrementFailedCount();
+                    log.debug("审核驳回: jobId={}, 驳回数={}", jobId, job.getFailedCount());
+                } else {
+                    // UNCERTAIN 等其他状态也算失败
+                    job.incrementFailedCount();
+                    log.debug("审核结果异常: jobId={}, 状态={}", jobId, auditStatus);
+                }
+
+                job.setUpdatedAt(LocalDateTime.now());
+                auditJobRepository.save(job);
+
+                log.info("进度更新: jobId={}, 已完成={}/{}, 通过={}, 驳回={}",
+                        jobId, job.getCompletedCount(), job.getTotalLinks(),
+                        job.getSuccessCount(), job.getFailedCount());
+            });
+        } catch (Exception e) {
+            log.error("更新任务进度失败: jobId={}", jobId, e);
+        }
+    }
+
+    /**
+     * 检查任务是否全部完成，如果是则更新状态为COMPLETED
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    private void checkAndUpdateJobCompletion(String jobId) {
+        try {
+            auditJobRepository.findByJobId(jobId).ifPresent(job -> {
+                // 检查是否所有链接都已处理完成
+                if (job.getCompletedCount() >= job.getTotalLinks()) {
+                    // 判断最终状态
+                    String finalStatus;
+                    if (job.getFailedCount() == 0) {
+                        finalStatus = "COMPLETED";
+                    } else if (job.getSuccessCount() == 0) {
+                        finalStatus = "FAILED";
+                    } else {
+                        finalStatus = "PARTIAL_SUCCESS";
+                    }
+
+                    job.setStatus(finalStatus);
+                    job.setCompletedAt(LocalDateTime.now());
+                    job.setMessage(String.format("任务完成: 总计=%d, 通过=%d, 驳回=%d",
+                            job.getTotalLinks(), job.getSuccessCount(), job.getFailedCount()));
+                    job.setUpdatedAt(LocalDateTime.now());
+                    auditJobRepository.save(job);
+
+                    log.info("🎉 任务全部完成: jobId={}, status={}, 总计={}, 通过={}, 驳回={}",
+                            jobId, finalStatus, job.getTotalLinks(), job.getSuccessCount(), job.getFailedCount());
+                }
+            });
+        } catch (Exception e) {
+            log.error("检查任务完成状态失败: jobId={}", jobId, e);
+        }
     }
 
     /**

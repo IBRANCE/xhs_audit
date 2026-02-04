@@ -2,13 +2,13 @@
 spring:
   application:
     name: xhs-audit-test
-  
+
   datasource:
     url: jdbc:h2:mem:testdb
     driver-class-name: org.h2.Driver
     username: sa
-    password: 
-  
+    password:
+
   jpa:
     database-platform: org.hibernate.dialect.H2Dialect
     hibernate:
@@ -19,32 +19,55 @@ spring:
         format_sql: false
         dialect: org.hibernate.dialect.H2Dialect
         storage_engine: innodb
-  
+
   # Disable Flyway for tests (uses H2 which doesn't support PostgreSQL JSONB type)
   flyway:
     enabled: false
-  
-  # Redis disabled for testing
+
+  # Redis configuration (enabled for E2E tests)
   data:
     redis:
       host: localhost
       port: 6379
       timeout: 2000ms
-      # Use embedded Redis or disable for tests
-  
+      stream:
+        batch-size: 10
+        block-ms: 2000
+        pending-retry-interval-ms: 60000
+        max-retry-attempts: 3
+
   cache:
     type: none
-  
+
   ai:
     openai:
       api-key: ${OPENAI_API_KEY:sk-test-mock-key}
       model: gpt-4
       base-url: https://api.openai.com
-  
+
   servlet:
     multipart:
       max-file-size: 50MB
       max-request-size: 50MB
+
+# Audit configuration for tests
+audit:
+  worker:
+    enabled: false
+  bloom-filter:
+    enabled: false
+  crawler:
+    enabled: false
+  executor:
+    core-pool-size: 2
+    max-pool-size: 5
+    queue-capacity: 100
+    crawl-pool-size: 1
+    crawl-queue-capacity: 10
+    audit-core-pool-size: 2
+    audit-max-pool-size: 5
+    audit-queue-capacity: 100
+    stream-consumer-threads: 1
 
 logging:
   level:

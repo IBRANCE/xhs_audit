@@ -40,6 +40,9 @@ public class AuditResultRepositoryCustom {
     public Page<Object[]> searchResults(String postId, String jobId, String status,
             LocalDateTime startDate, LocalDateTime endDate, Pageable pageable) {
 
+        log.info("[搜索] 开始查询: postId={}, jobId={}, status={}, startDate={}, endDate={}",
+                postId, jobId, status, startDate, endDate);
+
         StringBuilder whereClause = new StringBuilder("1=1");
         List<Object> params = new ArrayList<>();
 
@@ -75,10 +78,10 @@ public class AuditResultRepositoryCustom {
 
         // 只查询 audit_result 表的字段
         String selectSql = """
-            SELECT r.post_id, r.job_id, r.url, r.audit_status, r.reasons,
-                   r.confidence_score, r.model_name, r.audited_at
-            FROM audit_result r
-            """;
+                SELECT r.post_id, r.job_id, r.url, r.audit_status, r.reasons,
+                       r.confidence_score, r.model_name, r.audited_at
+                FROM audit_result r
+                """;
 
         String whereSql = " WHERE " + whereClause.toString();
 
@@ -97,11 +100,15 @@ public class AuditResultRepositoryCustom {
         queryParams.add(pageable.getOffset());
 
         // 执行查询
+        log.debug("执行查询SQL: {}", sql);
+        log.debug("查询参数: {}", queryParams);
         List<Object[]> results = jdbcTemplate.query(sql, new AuditResultSimpleRowMapper(), queryParams.toArray());
 
         // 查询总数
         String countSql = "SELECT COUNT(*) FROM audit_result r WHERE " + whereClause.toString();
         long total = jdbcTemplate.queryForObject(countSql, Long.class, params.toArray());
+
+        log.info("查询结果: 总数={}, 当前页记录数={}", total, results.size());
 
         return new PageImpl<>(results, pageable, total);
     }
@@ -111,11 +118,11 @@ public class AuditResultRepositoryCustom {
      */
     public Object[] findContentByPostId(String postId) {
         String sql = """
-            SELECT post_id, url, title, content, images, tags, author_id,
-                   published_at, crawled_at
-            FROM xhs_content
-            WHERE post_id = ?
-            """;
+                SELECT post_id, url, title, content, images, tags, author_id,
+                       published_at, crawled_at
+                FROM xhs_content
+                WHERE post_id = ?
+                """;
 
         try {
             return jdbcTemplate.queryForObject(sql, new ContentRowMapper(), postId);
@@ -131,7 +138,7 @@ public class AuditResultRepositoryCustom {
     private class AuditResultSimpleRowMapper implements RowMapper<Object[]> {
         @Override
         public Object[] mapRow(ResultSet rs, int rowNum) throws SQLException {
-            return new Object[]{
+            return new Object[] {
                     rs.getString("post_id"),
                     rs.getString("job_id"),
                     rs.getString("url"),
@@ -140,7 +147,8 @@ public class AuditResultRepositoryCustom {
                     rs.getBigDecimal("confidence_score"),
                     rs.getString("model_name"),
                     rs.getTimestamp("audited_at") != null
-                            ? rs.getTimestamp("audited_at").toLocalDateTime() : null
+                            ? rs.getTimestamp("audited_at").toLocalDateTime()
+                            : null
             };
         }
     }
@@ -151,7 +159,7 @@ public class AuditResultRepositoryCustom {
     private class ContentRowMapper implements RowMapper<Object[]> {
         @Override
         public Object[] mapRow(ResultSet rs, int rowNum) throws SQLException {
-            return new Object[]{
+            return new Object[] {
                     rs.getString("post_id"),
                     rs.getString("url"),
                     rs.getString("title"),
@@ -160,9 +168,11 @@ public class AuditResultRepositoryCustom {
                     parseJsonStringList(rs.getString("tags")),
                     rs.getString("author_id"),
                     rs.getTimestamp("published_at") != null
-                            ? rs.getTimestamp("published_at").toLocalDateTime() : null,
+                            ? rs.getTimestamp("published_at").toLocalDateTime()
+                            : null,
                     rs.getTimestamp("crawled_at") != null
-                            ? rs.getTimestamp("crawled_at").toLocalDateTime() : null
+                            ? rs.getTimestamp("crawled_at").toLocalDateTime()
+                            : null
             };
         }
     }
@@ -173,7 +183,8 @@ public class AuditResultRepositoryCustom {
             return new ArrayList<>();
         }
         try {
-            return objectMapper.readValue(json, new TypeReference<List<String>>() {});
+            return objectMapper.readValue(json, new TypeReference<List<String>>() {
+            });
         } catch (Exception e) {
             return new ArrayList<>();
         }
@@ -185,7 +196,8 @@ public class AuditResultRepositoryCustom {
             return new ArrayList<>();
         }
         try {
-            return objectMapper.readValue(json, new TypeReference<List<Map<String, Object>>>() {});
+            return objectMapper.readValue(json, new TypeReference<List<Map<String, Object>>>() {
+            });
         } catch (Exception e) {
             return new ArrayList<>();
         }

@@ -2,7 +2,7 @@
  * 小红书内容审核系统 - 前端脚本
  */
 
-(function() {
+(function () {
     'use strict';
 
     // State Management
@@ -110,6 +110,22 @@
 
         // Single audit
         elements.singleAuditBtn.addEventListener('click', handleSingleAudit);
+
+        // Async audit result buttons
+        document.getElementById('async-view-job')?.addEventListener('click', () => {
+            const jobId = document.getElementById('async-job-id')?.textContent;
+            if (jobId) {
+                switchTab('jobs');
+                document.getElementById('job-filter-id').value = jobId;
+                loadJobs();
+            }
+        });
+
+        document.getElementById('async-submit-new')?.addEventListener('click', () => {
+            document.getElementById('async-result').classList.add('hidden');
+            document.getElementById('single-url').value = '';
+            document.getElementById('single-url').focus();
+        });
 
         // File upload
         elements.uploadArea.addEventListener('click', () => elements.excelFile.click());
@@ -255,33 +271,81 @@
             return;
         }
 
+        // Get selected audit mode
+        const auditMode = document.querySelector('input[name="audit-mode"]:checked')?.value || 'sync';
+
         setLoading(elements.singleAuditBtn, true);
 
         try {
-            const response = await fetch('/api/v1/audit/content', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    url: url,
-                    forceRefresh: elements.forceRefresh.checked
-                })
-            });
-
-            const data = await response.json();
-
-            if (data.code !== '000000') {
-                throw new Error(data.message || '审核失败');
+            if (auditMode === 'async') {
+                // Async mode: submit to queue
+                await handleAsyncAudit(url);
+            } else {
+                // Sync mode: direct audit
+                await handleSyncAudit(url);
             }
-
-            displaySingleResult(data.data);
         } catch (error) {
             showToast(error.message || '审核失败，请稍后重试', 'error');
             elements.singleResult.classList.add('hidden');
+            document.getElementById('async-result').classList.add('hidden');
         } finally {
             setLoading(elements.singleAuditBtn, false);
         }
+    }
+
+    // Sync audit (original behavior)
+    async function handleSyncAudit(url) {
+        const response = await fetch('/api/v1/audit/content', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                url: url,
+                forceRefresh: elements.forceRefresh.checked
+            })
+        });
+
+        const data = await response.json();
+
+        if (data.code !== '000000') {
+            throw new Error(data.message || '审核失败');
+        }
+
+        // Hide async result, show sync result
+        document.getElementById('async-result').classList.add('hidden');
+        displaySingleResult(data.data);
+    }
+
+    // Async audit (submit to queue)
+    async function handleAsyncAudit(url) {
+        const response = await fetch('/api/audit/async', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                url: url,
+                forceRefresh: elements.forceRefresh.checked,
+                source: 'WEB_SINGLE_ASYNC'
+            })
+        });
+
+        const data = await response.json();
+
+        if (data.status !== 'accepted') {
+            throw new Error(data.message || '任务提交失败');
+        }
+
+        // Hide sync result, show async result
+        elements.singleResult.classList.add('hidden');
+        displayAsyncResult(data.jobId);
+    }
+
+    // Display async audit result
+    function displayAsyncResult(jobId) {
+        document.getElementById('async-result').classList.remove('hidden');
+        document.getElementById('async-job-id').textContent = jobId;
     }
 
     function displaySingleResult(result) {
@@ -392,13 +456,19 @@
             return;
         }
 
+        // Get selected batch mode
+        const modeInput = document.querySelector('input[name="batch-mode"]:checked');
+        const mode = modeInput ? modeInput.value : 'sync';
+
         setLoading(elements.uploadBtn, true);
 
         try {
             const formData = new FormData();
             formData.append('file', file);
 
-            const response = await fetch('/api/v1/audit/upload', {
+            // Use different endpoint based on mode
+            const endpoint = mode === 'async' ? '/api/v1/audit/upload-async' : '/api/v1/audit/upload';
+            const response = await fetch(endpoint, {
                 method: 'POST',
                 body: formData
             });
@@ -409,12 +479,23 @@
                 throw new Error(data.message || '上传失败');
             }
 
-            // Start polling
-            state.batchJobId = data.data.jobId;
-            elements.batchProgress.classList.remove('hidden');
-            startPolling();
+            if (mode === 'async') {
+                // For async mode, show job ID and redirect to jobs list
+                showToast(`任务已提交到队列，任务ID: ${data.data.jobId}`, 'success');
+                setLoading(elements.uploadBtn, false);
+                clearFile();
 
-            showToast('文件上传成功，任务已开始处理', 'success');
+                // Switch to jobs tab after 1 second
+                setTimeout(() => {
+                    document.querySelector('[data-tab="jobs"]').click();
+                }, 1000);
+            } else {
+                // For sync mode, start polling
+                state.batchJobId = data.data.jobId;
+                elements.batchProgress.classList.remove('hidden');
+                startPolling();
+                showToast('文件上传成功，任务已开始处理', 'success');
+            }
         } catch (error) {
             showToast(error.message || '上传失败，请稍后重试', 'error');
             setLoading(elements.uploadBtn, false);
@@ -546,7 +627,18 @@
             elements.jobTable.classList.remove('hidden');
             elements.jobEmptyState.classList.add('hidden');
 
-            const tbodyHtml = content.map(job => `
+            const tbodyHtml = content.map(job => {
+                // 判断任务是否完成（可以下载）
+                const canDownload = ['COMPLETED', 'PARTIAL_SUCCESS', 'FAILED'].includes(job.status);
+                const downloadBtnHtml = canDownload
+                    ? `<button class="btn btn-sm btn-primary download-job-excel" data-job-id="${job.jobId}" style="margin-left: 8px;">
+                            <span style="font-size: 14px;">&#8595;</span> 下载
+                       </button>`
+                    : `<button class="btn btn-sm btn-disabled" disabled style="margin-left: 8px; cursor: not-allowed; opacity: 0.5;" title="任务未完成，无法下载">
+                            <span style="font-size: 14px;">&#8595;</span> 下载
+                       </button>`;
+
+                return `
                 <tr data-job-id="${job.jobId}">
                     <td class="table-job-id" title="${job.jobId || ''}">${job.jobId || '-'}</td>
                     <td class="table-file-name" title="${escapeHtml(job.fileName || '')}">${escapeHtml(job.fileName || '-')}</td>
@@ -566,9 +658,11 @@
                     <td>${formatDateTime(job.createdAt)}</td>
                     <td>
                         <button class="btn btn-sm btn-outline view-job-detail" data-job-id="${job.jobId}">查看详情</button>
+                        ${downloadBtnHtml}
                     </td>
                 </tr>
-            `).join('');
+                `;
+            }).join('');
 
             elements.jobTbody.innerHTML = tbodyHtml;
 
@@ -583,6 +677,15 @@
                     e.stopPropagation();
                     const jobId = btn.dataset.jobId;
                     openHistoryWithJobId(jobId);
+                });
+            });
+
+            // Bind download click events
+            elements.jobTbody.querySelectorAll('.download-job-excel').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const jobId = btn.dataset.jobId;
+                    downloadJobExcel(jobId);
                 });
             });
         }
@@ -603,6 +706,26 @@
         // 重新加载历史记录
         state.historyPage = 0;
         await loadHistoryResults();
+    }
+
+    // 下载任务的Excel结果
+    function downloadJobExcel(jobId) {
+        showToast('正在准备下载...', 'info');
+
+        // 创建一个隐藏的下载链接
+        const downloadUrl = `/api/v1/audit/download/${jobId}`;
+        const link = document.createElement('a');
+        link.href = downloadUrl;
+        link.download = `audit_result_${jobId}.xlsx`;
+        link.style.display = 'none';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+
+        // 延迟显示成功提示，让下载有时间启动
+        setTimeout(() => {
+            showToast('下载已开始', 'success');
+        }, 500);
     }
 
     async function openJobDetail(jobId) {
@@ -712,7 +835,7 @@
         });
     }
 
-    window.loadMoreJobResults = function(jobId, page) {
+    window.loadMoreJobResults = function (jobId, page) {
         fetch(`/api/v1/audit/jobs/${jobId}?page=${page}&size=20`)
             .then(response => response.json())
             .then(data => {
@@ -922,7 +1045,7 @@
     }
 
     // Image Preview
-    window.showImagePreview = function(imageUrl) {
+    window.showImagePreview = function (imageUrl) {
         elements.modalImage.src = imageUrl;
         elements.imageModal.classList.remove('hidden');
     };
@@ -960,8 +1083,8 @@
     function validateUrl(url) {
         // Support: xiaohongshu.com explore/discovery links, xhslink.com short links
         return url.includes('xiaohongshu.com') ||
-               url.includes('xhslink.com') ||
-               url.includes('xhs.com');
+            url.includes('xhslink.com') ||
+            url.includes('xhs.com');
     }
 
     function escapeHtml(text) {

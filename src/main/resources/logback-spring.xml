@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
+    <springProperty scope="context" name="APP_NAME" source="spring.application.name" defaultValue="xhs-audit"/>
+    <springProperty scope="context" name="LOG_PATH" source="logging.file.path" defaultValue="logs"/>
+
+    <!-- 开发环境：普通文本格式控制台输出 -->
+    <appender name="CONSOLE_DEV" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <!-- 格式: 时间 [线程] 级别 [jobId=xxx] logger - 消息 -->
+            <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level [%X{jobId}] %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- 生产环境：JSON 格式控制台输出 -->
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+            <customFields>{"app":"${APP_NAME}"}</customFields>
+            <includeMdcKeyName>traceId</includeMdcKeyName>
+            <includeMdcKeyName>jobId</includeMdcKeyName>
+            <includeMdcKeyName>url</includeMdcKeyName>
+        </encoder>
+    </appender>
+
+    <!-- 生产环境：JSON 文件输出 -->
+    <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_PATH}/${APP_NAME}.log</file>
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+            <customFields>{"app":"${APP_NAME}"}</customFields>
+        </encoder>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_PATH}/${APP_NAME}.%d{yyyy-MM-dd}.log</fileNamePattern>
+            <maxHistory>30</maxHistory>
+            <totalSizeCap>10GB</totalSizeCap>
+        </rollingPolicy>
+    </appender>
+
+    <!-- Stream 消费日志单独输出 -->
+    <appender name="STREAM" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_PATH}/stream-consumer.log</file>
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+            <customFields>{"app":"${APP_NAME}","component":"stream-consumer"}</customFields>
+        </encoder>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_PATH}/stream-consumer.%d{yyyy-MM-dd}.log</fileNamePattern>
+            <maxHistory>7</maxHistory>
+        </rollingPolicy>
+    </appender>
+
+    <!-- Stream Worker 专用日志 -->
+    <logger name="com.xhs.audit.worker" level="INFO" additivity="false">
+        <appender-ref ref="STREAM"/>
+        <appender-ref ref="CONSOLE_DEV"/>
+    </logger>
+
+    <!-- MessageQueueService 专用日志 -->
+    <logger name="com.xhs.audit.infrastructure.MessageQueueService" level="INFO" additivity="false">
+        <appender-ref ref="STREAM"/>
+        <appender-ref ref="CONSOLE_DEV"/>
+    </logger>
+
+    <!-- 降低第三方库日志级别 -->
+    <logger name="org.apache.poi.openxml4j.opc.PackageRelationshipCollection" level="OFF"/>
+    <logger name="org.springframework.data.redis" level="INFO"/>
+    <logger name="io.lettuce.core" level="INFO"/>
+
+    <!-- 开发模式：使用普通格式 -->
+    <springProfile name="dev,local">
+        <root level="INFO">
+            <appender-ref ref="CONSOLE_DEV"/>
+        </root>
+    </springProfile>
+
+    <!-- 生产模式：使用 JSON 格式 -->
+    <springProfile name="default,prod">
+        <root level="INFO">
+            <appender-ref ref="CONSOLE"/>
+            <appender-ref ref="FILE"/>
+        </root>
+    </springProfile>
+</configuration>

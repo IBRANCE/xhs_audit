@@ -30,6 +30,9 @@ public class AuditJob {
     @Column(nullable = false, unique = true, length = 100)
     private String jobId;
 
+    @Column(length = 500)
+    private String url; // v4.0: 单个任务的URL
+
     @Column(nullable = false)
     private Integer totalLinks;
 
@@ -44,6 +47,9 @@ public class AuditJob {
 
     @Column(length = 20)
     private String status; // PENDING / PROCESSING / COMPLETED / PARTIAL_SUCCESS / FAILED
+
+    @Column(length = 500)
+    private String message; // v4.0: 状态消息
 
     @Column(length = 255)
     private String fileName;

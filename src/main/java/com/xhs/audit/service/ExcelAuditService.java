@@ -65,6 +65,9 @@ public class ExcelAuditService {
     @Autowired
     private AsyncAuditService asyncAuditService;
 
+    @Autowired
+    private com.xhs.audit.infrastructure.MessageQueueService messageQueueService;
+
     // 小红书链接正则表达式 - 支持标准链接、短链接和查询参数
     private static final Pattern URL_PATTERN = Pattern.compile(
             "https?://(?:www\\.|m\\.)?(?:xiaohongshu\\.com/(?:explore|discovery/item)/[a-zA-Z0-9_-]+|xhs\\.com/[a-zA-Z0-9_-]+|xhslink\\.com/o/[a-zA-Z0-9]+)(?:\\?[^\\s\"\']*)?");
@@ -138,6 +141,87 @@ public class ExcelAuditService {
             asyncAuditService.processAuditJob(jobId, new ArrayList<>(uniqueUrls));
 
             log.info("[同步阶段完成] 返回jobId给用户: {}, 用户无需等待，可通过jobId查询进度", jobId);
+            return jobId;
+
+        } catch (IOException e) {
+            log.error("Excel文件处理失败", e);
+            throw new BusinessException("ERR_FILE_PARSE_FAILED", "Excel文件解析失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 处理Excel上传并创建审核任务（异步Redis模式）
+     * v4.0: 使用 Redis Stream 消息队列
+     * 
+     * @param file 上传的Excel文件
+     * @return 任务ID
+     */
+    public String processExcelUploadAsync(MultipartFile file) {
+        try {
+            log.info("[Redis异步模式] 开始处理Excel上传: filename={}, size={}",
+                    file.getOriginalFilename(), file.getSize());
+
+            // 1. 验证文件
+            validateFile(file);
+
+            // 2. 解析Excel，提取链接
+            log.info("[Redis异步模式] Apache POI解析Excel，提取小红书链接...");
+            List<String> urls = extractUrlsFromExcel(file.getInputStream());
+
+            if (urls.isEmpty()) {
+                throw new BusinessException("ERR_NO_VALID_LINKS", "Excel中未找到有效的小红书链接");
+            }
+            log.info("[Redis异步模式] Excel解析完成: 提取到{}条链接", urls.size());
+
+            // 3. 去重
+            Set<String> uniqueUrls = new LinkedHashSet<>(urls);
+            log.info("[Redis异步模式] 链接验证与去重: 原始{}条, 去重后{}条", urls.size(), uniqueUrls.size());
+
+            // 4. 创建审核任务
+            String jobId = generateJobId();
+            AuditJob job = new AuditJob();
+            job.setJobId(jobId);
+            job.setTotalLinks(uniqueUrls.size());
+            job.setCompletedCount(0);
+            job.setSuccessCount(0);
+            job.setFailedCount(0);
+            job.setStatus("PENDING");
+            job.setFileName(file.getOriginalFilename());
+            job.setCreatedAt(LocalDateTime.now());
+            job.setUpdatedAt(LocalDateTime.now());
+
+            auditJobRepository.save(job);
+            log.info("[Redis异步模式] 创建审核任务: jobId={}, status=PENDING, totalLinks={}", jobId, uniqueUrls.size());
+
+            // 5. 发送每个URL到Redis Stream队列
+            log.info("[Redis异步模式] 开始发送任务到Redis Stream: jobId={}, count={}", jobId, uniqueUrls.size());
+            int sentCount = 0;
+            int skippedCount = 0;
+
+            for (String url : uniqueUrls) {
+                try {
+                    com.xhs.audit.model.dto.CrawlTaskMessage message = new com.xhs.audit.model.dto.CrawlTaskMessage(
+                            jobId, url, "EXCEL_BATCH", false);
+
+                    String recordId = messageQueueService.sendCrawlTask(message);
+
+                    if (recordId != null) {
+                        sentCount++;
+                        log.debug("[Redis异步模式] 任务已发送: jobId={}, url={}, recordId={}", jobId, url, recordId);
+                    } else {
+                        skippedCount++;
+                        log.warn("[Redis异步模式] 任务跳过（可能重复）: jobId={}, url={}", jobId, url);
+                    }
+                } catch (Exception e) {
+                    log.error("[Redis异步模式] 发送任务失败: jobId={}, url={}", jobId, url, e);
+                    skippedCount++;
+                }
+            }
+
+            log.info("[Redis异步模式] 任务发送完成: jobId={}, 成功={}, 跳过={}, 总计={}",
+                    jobId, sentCount, skippedCount, uniqueUrls.size());
+            log.info("[Redis异步模式] CrawlerWorker 和 AuditWorker 将自动处理这些任务");
+
             return jobId;
 
         } catch (IOException e) {
