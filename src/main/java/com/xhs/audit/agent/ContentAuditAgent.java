@@ -63,6 +63,22 @@ import java.time.Duration;
 @Component
 public class ContentAuditAgent {
 
+    // ============ 常量定义 ============
+
+    /** 审核超时时间（秒） */
+    private static final int AUDIT_TIMEOUT_SECONDS = 60;
+
+    /** 默认置信度 */
+    private static final double DEFAULT_CONFIDENCE_SCORE = 0.5;
+
+    /** LLM temperature 参数 */
+    private static final double LLM_TEMPERATURE = 0.3;
+
+    /** LLM max_tokens 参数 */
+    private static final int LLM_MAX_TOKENS = 100;
+
+    // ============ 依赖注入 ============
+
     private final ChatClient textChatClient;
     private final ObjectMapper objectMapper;
     private final Executor auditExecutor;
@@ -129,8 +145,8 @@ public class ContentAuditAgent {
 
             // 等待两个任务完成
             log.info("[Agent审核] 并行执行文本审核和图片审核...");
-            String textResult = textFuture.get(60, TimeUnit.SECONDS);
-            String imageResult = imageFuture.get(60, TimeUnit.SECONDS);
+            String textResult = textFuture.get(AUDIT_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            String imageResult = imageFuture.get(AUDIT_TIMEOUT_SECONDS, TimeUnit.SECONDS);
 
             // 构建决策
             AuditDecision decision = buildDecisionFromResults(content, textResult, imageResult);
@@ -281,7 +297,7 @@ public class ContentAuditAgent {
                 decision.setReasons(List.of());
             }
             if (decision.getConfidenceScore() == null) {
-                decision.setConfidenceScore(0.5);
+                decision.setConfidenceScore(DEFAULT_CONFIDENCE_SCORE);
             }
 
             return decision;
@@ -389,8 +405,8 @@ public class ContentAuditAgent {
             messages.add(message);
 
             requestBody.put("messages", messages);
-            requestBody.put("temperature", 0.3);
-            requestBody.put("max_tokens", 100);
+            requestBody.put("temperature", LLM_TEMPERATURE);
+            requestBody.put("max_tokens", LLM_MAX_TOKENS);
 
             // 构建请求URL（确保末尾有 /v1）
             String apiUrl = baseUrl;

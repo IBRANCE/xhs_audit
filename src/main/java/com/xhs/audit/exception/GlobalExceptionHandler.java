@@ -16,7 +16,19 @@ import com.xhs.audit.model.dto.ApiResponse;
 
 /**
  * 全局异常处理器
- * 
+ * <p>
+ * 统一处理应用中抛出的各类异常，返回规范的错误响应。
+ * <p>
+ * 异常处理映射：
+ * <table border="1">
+ *   <tr><th>异常类型</th><th>HTTP状态</th><th>错误码前缀</th></tr>
+ *   <tr><td>MethodArgumentNotValidException</td><td>400</td><td>ERR_VALIDATION</td></tr>
+ *   <tr><td>MaxUploadSizeExceededException</td><td>413</td><td>ERR_FILE_SIZE_EXCEED</td></tr>
+ *   <tr><td>BusinessException</td><td>400</td><td>ERR_XXX</td></tr>
+ *   <tr><td>ResourceNotFoundException</td><td>404</td><td>ERR_NOT_FOUND_XXX</td></tr>
+ *   <tr><td>其他Exception</td><td>500</td><td>ERR_INTERNAL_SERVER</td></tr>
+ * </table>
+ *
  * @author XHS Audit System
  * @since 2026-01-27
  */
@@ -25,7 +37,12 @@ import com.xhs.audit.model.dto.ApiResponse;
 public class GlobalExceptionHandler {
 
     /**
-     * 参数验证异常
+     * 处理参数校验异常
+     * <p>
+     * 当使用 @Valid 注解校验失败时触发
+     *
+     * @param ex 校验异常
+     * @return 错误响应（包含所有字段错误信息）
      */
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<ApiResponse<Map<String, String>>> handleValidationExceptions(
@@ -44,7 +61,12 @@ public class GlobalExceptionHandler {
     }
 
     /**
-     * 文件大小超限异常
+     * 处理文件大小超限异常
+     * <p>
+     * 当上传文件超过配置的最大限制时触发
+     *
+     * @param ex 上传大小超限异常
+     * @return 错误响应（HTTP 413 Payload Too Large）
      */
     @ExceptionHandler(MaxUploadSizeExceededException.class)
     public ResponseEntity<ApiResponse<Void>> handleMaxSizeException(MaxUploadSizeExceededException ex) {
@@ -54,7 +76,12 @@ public class GlobalExceptionHandler {
     }
 
     /**
-     * 业务异常
+     * 处理业务异常
+     * <p>
+     * 业务逻辑层面的异常，如参数校验、状态错误等
+     *
+     * @param ex 业务异常
+     * @return 错误响应（HTTP 400 Bad Request）
      */
     @ExceptionHandler(BusinessException.class)
     public ResponseEntity<ApiResponse<Void>> handleBusinessException(BusinessException ex) {
@@ -64,7 +91,12 @@ public class GlobalExceptionHandler {
     }
 
     /**
-     * 资源未找到异常
+     * 处理资源未找到异常
+     * <p>
+     * 当请求的资源不存在时触发，如查询不存在的任务ID
+     *
+     * @param ex 资源未找到异常
+     * @return 错误响应（HTTP 404 Not Found）
      */
     @ExceptionHandler(ResourceNotFoundException.class)
     public ResponseEntity<ApiResponse<Void>> handleResourceNotFoundException(ResourceNotFoundException ex) {
@@ -74,7 +106,12 @@ public class GlobalExceptionHandler {
     }
 
     /**
-     * 通用异常
+     * 处理通用异常
+     * <p>
+     * 兜底处理未预期的异常，记录堆栈信息便于排查
+     *
+     * @param ex 其他异常
+     * @return 错误响应（HTTP 500 Internal Server Error）
      */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiResponse<Void>> handleGenericException(Exception ex) {

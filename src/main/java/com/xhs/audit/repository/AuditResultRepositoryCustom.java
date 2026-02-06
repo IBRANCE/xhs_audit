@@ -22,7 +22,23 @@ import lombok.extern.slf4j.Slf4j;
 
 /**
  * 自定义审核结果Repository
- * 处理复杂查询场景
+ * <p>
+ * 处理复杂查询场景，使用原生SQL提高查询性能。
+ * <p>
+ * 功能说明：
+ * <ul>
+ *   <li>searchResults - 多条件搜索，支持分页</li>
+ *   <li>findContentByPostId - 查询内容详情</li>
+ * </ul>
+ * <p>
+ * RowMapper说明：
+ * <ul>
+ *   <li>AuditResultSimpleRowMapper - 审核结果行映射</li>
+ *   <li>ContentRowMapper - 内容行映射</li>
+ * </ul>
+ *
+ * @author XHS Audit System
+ * @since 2026-01-27
  */
 @Slf4j
 @Repository
@@ -34,8 +50,26 @@ public class AuditResultRepositoryCustom {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     /**
-     * 搜索审核结果（支持分页和筛选）
-     * 只查询 audit_result 表，按 post_id、job_id、audit_status、时间筛选
+     * 搜索审核结果
+     * <p>
+     * 支持多条件筛选和分页，只查询 audit_result 表。
+     * <p>
+     * 筛选条件：
+     * <ul>
+     *   <li>postId - 帖子ID精确匹配</li>
+     *   <li>jobId - 任务ID精确匹配</li>
+     *   <li>status - 审核状态精确匹配</li>
+     *   <li>startDate - 审核时间范围起点</li>
+     *   <li>endDate - 审核时间范围终点</li>
+     * </ul>
+     *
+     * @param postId    帖子ID（可选）
+     * @param jobId     任务ID（可选）
+     * @param status    审核状态（可选）
+     * @param startDate 开始时间（可选）
+     * @param endDate   结束时间（可选）
+     * @param pageable  分页参数
+     * @return 分页结果
      */
     public Page<Object[]> searchResults(String postId, String jobId, String status,
             LocalDateTime startDate, LocalDateTime endDate, Pageable pageable) {
@@ -114,7 +148,12 @@ public class AuditResultRepositoryCustom {
     }
 
     /**
-     * 按 postId 查询 xhs_content 表
+     * 根据 postId 查询 xhs_content 表
+     * <p>
+     * 获取内容的完整信息，包括图片、标签等
+     *
+     * @param postId 帖子ID
+     * @return 内容数组，字段顺序：post_id, url, title, content, images, tags, author_id, published_at, crawled_at
      */
     public Object[] findContentByPostId(String postId) {
         String sql = """
@@ -133,7 +172,10 @@ public class AuditResultRepositoryCustom {
     }
 
     /**
-     * 简化的行映射器，只处理 audit_result 表的字段
+     * 审核结果简化的行映射器
+     * <p>
+     * 将数据库结果集映射为Object数组，用于分页查询。
+     * 返回字段：post_id, job_id, url, audit_status, reasons, confidence_score, model_name, audited_at
      */
     private class AuditResultSimpleRowMapper implements RowMapper<Object[]> {
         @Override
@@ -155,6 +197,9 @@ public class AuditResultRepositoryCustom {
 
     /**
      * xhs_content 表的行映射器
+     * <p>
+     * 将数据库结果集映射为Object数组。
+     * 返回字段：post_id, url, title, content, images, tags, author_id, published_at, crawled_at
      */
     private class ContentRowMapper implements RowMapper<Object[]> {
         @Override
@@ -177,6 +222,12 @@ public class AuditResultRepositoryCustom {
         }
     }
 
+    /**
+     * 解析JSON字符串为String列表
+     *
+     * @param json JSON字符串
+     * @return String列表
+     */
     @SuppressWarnings("unchecked")
     private List<String> parseJsonStringList(String json) {
         if (json == null || json.isEmpty()) {
@@ -190,6 +241,12 @@ public class AuditResultRepositoryCustom {
         }
     }
 
+    /**
+     * 解析JSON字符串为Map列表
+     *
+     * @param json JSON字符串
+     * @return Map列表
+     */
     @SuppressWarnings("unchecked")
     private List<Map<String, Object>> parseJsonMapList(String json) {
         if (json == null || json.isEmpty()) {

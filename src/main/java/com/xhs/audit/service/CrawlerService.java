@@ -57,6 +57,23 @@ public class CrawlerService {
     // poolSize=4, MAX_FAILURES_THRESHOLD=3, 5次重试可以覆盖最坏场景
     private static final int MAX_RETRY_ATTEMPTS = 5;
     private static final long[] RETRY_DELAYS_MS = { 500, 1000, 1500, 2000, 2500 };
+
+    // ============ Selenium 爬虫常量 ============
+    /** 页面内容加载超时时间（秒） */
+    private static final int CONTENT_LOAD_TIMEOUT_SECONDS = 10;
+    /** 滚动步长（像素） */
+    private static final int SCROLL_STEP = 300;
+    /** 最大滚动次数 */
+    private static final int MAX_SCROLLS = 3;
+    /** 滚动随机范围 */
+    private static final int SCROLL_RANDOM_RANGE = 200;
+    /** 滚动等待基础时间（毫秒） */
+    private static final int SCROLL_WAIT_BASE_MS = 100;
+    /** 滚动等待随机范围（毫秒） */
+    private static final int SCROLL_WAIT_RANDOM_MS = 100;
+    /** 回顶部等待时间（毫秒） */
+    private static final int SCROLL_TO_TOP_WAIT_MS = 300;
+
     // 支持标准小红书链接和 xhslink.com 短链接
     private static final Pattern XHS_URL_PATTERN = Pattern.compile(
             "https://(?:www\\.)?xiaohongshu\\.com/(?:explore|discovery/item)/([a-zA-Z0-9_-]+)");
@@ -357,7 +374,7 @@ public class CrawlerService {
         try {
             // 等待主要内容区域出现
             org.openqa.selenium.support.ui.WebDriverWait wait = new org.openqa.selenium.support.ui.WebDriverWait(driver,
-                    java.time.Duration.ofSeconds(10));
+                    java.time.Duration.ofSeconds(CONTENT_LOAD_TIMEOUT_SECONDS));
             wait.until(d -> {
                 try {
                     return !d.findElements(By.cssSelector("[class*='content']")).isEmpty();
@@ -555,27 +572,25 @@ public class CrawlerService {
 
             // 分段滚动
             int currentPosition = 0;
-            int scrollStep = 300;
-            int maxScrolls = 3;
             int scrollCount = 0;
 
-            while (currentPosition < totalHeight && scrollCount < maxScrolls) {
-                int randomScroll = scrollStep + (int) (Math.random() * 200);
+            while (currentPosition < totalHeight && scrollCount < MAX_SCROLLS) {
+                int randomScroll = SCROLL_STEP + (int) (Math.random() * SCROLL_RANDOM_RANGE);
                 currentPosition += randomScroll;
 
                 js.executeScript("window.scrollTo(0, " + currentPosition + ")");
 
                 // 随机等待
-                int waitTime = 100 + (int) (Math.random() * 100);
+                int waitTime = SCROLL_WAIT_BASE_MS + (int) (Math.random() * SCROLL_WAIT_RANDOM_MS);
                 Thread.sleep(waitTime);
 
                 scrollCount++;
-                log.debug("[爬虫服务-Selenium] 滚动进度: {}/{}, 位置: {}px", scrollCount, maxScrolls, currentPosition);
+                log.debug("[爬虫服务-Selenium] 滚动进度: {}/{}, 位置: {}px", scrollCount, MAX_SCROLLS, currentPosition);
             }
 
             // 滚动回顶部
             js.executeScript("window.scrollTo(0, 0)");
-            Thread.sleep(300);
+            Thread.sleep(SCROLL_TO_TOP_WAIT_MS);
 
             log.debug("[爬虫服务-Selenium] 用户滚动模拟完成");
 

@@ -19,6 +19,7 @@ import com.xhs.audit.exception.BusinessException;
 import com.xhs.audit.model.dto.AuditDecision;
 import com.xhs.audit.model.dto.AuditDetailResponse;
 import com.xhs.audit.model.dto.AuditResultItem;
+import com.xhs.audit.model.dto.AuditSearchCriteria;
 import com.xhs.audit.model.entity.AuditResult;
 import com.xhs.audit.model.entity.XhsContent;
 import com.xhs.audit.repository.AuditResultRepository;
@@ -301,14 +302,39 @@ public class ContentAuditService {
      * @param endDate   结束时间
      * @param pageable  分页参数
      * @return 分页的审核结果列表
+     * @deprecated Use {@link #searchAuditResults(AuditSearchCriteria, Pageable)} instead
      */
+    @Deprecated
     @Transactional(readOnly = true)
     public Page<AuditResultItem> searchAuditResults(String postId, String jobId, String status,
             LocalDateTime startDate, LocalDateTime endDate, Pageable pageable) {
-        log.info("搜索审核结果: postId={}, jobId={}, status={}, startDate={}, endDate={}, page={}, size={}",
-                postId, jobId, status, startDate, endDate, pageable.getPageNumber(), pageable.getPageSize());
+        return searchAuditResults(AuditSearchCriteria.builder()
+                .postId(postId)
+                .jobId(jobId)
+                .status(status)
+                .startDate(startDate)
+                .endDate(endDate)
+                .build(), pageable);
+    }
 
-        Page<Object[]> results = auditResultRepositoryCustom.searchResults(postId, jobId, status, startDate, endDate,
+    /**
+     * 搜索审核结果（支持分页和筛选）
+     *
+     * @param criteria  搜索条件
+     * @param pageable 分页参数
+     * @return 分页的审核结果列表
+     */
+    @Transactional(readOnly = true)
+    public Page<AuditResultItem> searchAuditResults(AuditSearchCriteria criteria, Pageable pageable) {
+        log.info("搜索审核结果: criteria={}, page={}, size={}",
+                criteria, pageable.getPageNumber(), pageable.getPageSize());
+
+        Page<Object[]> results = auditResultRepositoryCustom.searchResults(
+                criteria.getPostId(),
+                criteria.getJobId(),
+                criteria.getStatus(),
+                criteria.getStartDate(),
+                criteria.getEndDate(),
                 pageable);
 
         List<AuditResultItem> items = results.getContent().stream()
