@@ -20,6 +20,8 @@ mvn clean package -DskipTests
 
 # 4. Run the application
 mvn spring-boot:run
+# or
+java -jar target/xhs-audit-1.0.0-SNAPSHOT.jar
 ```
 
 ### Production Deployment
@@ -47,6 +49,24 @@ docker-compose -f docker-compose-production.yml restart crawler-worker-1
 docker-compose -f docker-compose-production.yml restart crawler-worker-2
 docker-compose -f docker-compose-production.yml restart audit-worker-1
 docker-compose -f docker-compose-production.yml restart audit-worker-2
+```
+
+### v4.0 Async Worker Deployment
+
+The v4.0 architecture supports distributed worker deployment:
+
+```bash
+# Deploy API server only
+docker-compose up -d api
+
+# Deploy crawler worker only
+docker-compose up -d crawler-worker
+
+# Deploy audit worker only
+docker-compose up -d audit-worker
+
+# Deploy all workers
+WORKER_TYPE=both docker-compose up -d
 ```
 
 ---
@@ -85,19 +105,17 @@ Access the Selenium Grid dashboard at: **http://localhost:4444**
 
 Check:
 - Number of active sessions
-- Node availability
+- Node availability (4 Chrome + 8 Firefox)
 - Browser versions
-
-![Selenium Grid Dashboard](SELENIUM_MONITORING.md)
 
 ### Redis Commander
 
 Access Redis GUI at: **http://localhost:8081**
 
 Monitor:
-- Stream message counts
+- Stream message counts (`xhs:stream:crawl`, `xhs:stream:audit`)
 - Key space usage
-- Consumer group status
+- Consumer group status (`crawl-workers`, `audit-workers`)
 
 ### Log Monitoring
 
@@ -112,6 +130,36 @@ docker-compose logs -f
 docker logs xhs-audit-api --tail 100
 docker logs xhs-audit-crawler-1 --tail 100
 docker logs xhs-audit-audit-1 --tail 100
+```
+
+---
+
+## v4.0 Redis Stream Monitoring
+
+### Stream Statistics
+
+```bash
+# Check stream length
+docker exec xhs-audit-redis redis-cli XLEN xhs:stream:crawl
+docker exec xhs-audit-redis redis-cli XLEN xhs:stream:audit
+
+# Check pending messages
+docker exec xhs-audit-redis redis-cli XPENDING xhs:stream:crawl
+docker exec xhs-audit-redis redis-cli XPENDING xhs:stream:audit
+
+# Check consumer groups
+docker exec xhs-audit-redis redis-cli XINFO GROUPS xhs:stream:crawl
+docker exec xhs-audit-redis redis-cli XINFO GROUPS xhs:stream:audit
+```
+
+### Dead Letter Queue Monitoring
+
+```bash
+# Check dead letter queue
+docker exec xhs-audit-redis redis-cli XLEN xhs:stream:dead-letter
+
+# View dead letter messages
+docker exec xhs-audit-redis redis-cli XRANGE xhs:stream:dead-letter - + COUNT 10
 ```
 
 ---
@@ -234,10 +282,10 @@ Crawl tasks not being processed
 **Diagnosis:**
 ```bash
 # Check pending messages
-docker exec xhs-audit-redis redis-cli XPENDING crawl:tasks
+docker exec xhs-audit-redis redis-cli XPENDING xhs:stream:crawl
 
 # Check consumer group status
-docker exec xhs-audit-redis redis-cli XINFO GROUPS crawl:tasks
+docker exec xhs-audit-redis redis-cli XINFO GROUPS xhs:stream:crawl
 ```
 
 **Resolution:**
@@ -247,6 +295,29 @@ docker-compose restart crawler-worker-1 crawler-worker-2
 
 # Or scale up workers
 docker-compose scale crawler-worker=4
+```
+
+### Issue 6: Worker Not Processing Messages
+
+**Symptoms:**
+```
+Messages stuck in stream
+Workers not consuming
+```
+
+**Diagnosis:**
+```bash
+# Check worker logs
+docker logs xhs-audit-crawler-worker
+
+# Check consumer registration
+docker exec xhs-audit-redis redis-cli XINFO GROUPS xhs:stream:crawl
+```
+
+**Resolution:**
+```bash
+# Restart worker with proper configuration
+AUDIT_WORKER_ENABLED=true CRAWLER_WORKER_ENABLED=true docker-compose restart crawler-worker
 ```
 
 ---
@@ -304,16 +375,23 @@ environment:
   - JAVA_OPTS=-Xmx2048m -Xms1024m -XX:+UseG1GC
 ```
 
-### Thread Pool Configuration
+### Thread Pool Configuration (v4.0)
 
 In `application.yml`:
 ```yaml
 spring:
   task:
     pool:
-      core-pool-size: 10-size: 50
-      max-pool
+      core-pool-size: 10
+      max-pool-size: 50
       queue-capacity: 1000
+
+# v4.0 Worker-specific pools
+audit:
+  crawler:
+    concurrent-crawl-threads: 8
+  stream-consumer:
+    threads: 5
 ```
 
 ### Redis Tuning
@@ -337,6 +415,47 @@ docker exec xhs-audit-redis redis-cli CONFIG SET appendonly yes
 | Pending Messages | > 100 | > 1000 |
 | Failed Jobs/min | > 10 | > 50 |
 | Response Time | > 5s | > 10s |
+| Stream Lag | > 5min | > 30min |
+
+---
+
+## v4.0 Worker Management
+
+### Scaling Workers
+
+```bash
+# Scale crawler workers
+docker-compose scale crawler-worker=4
+
+# Scale audit workers
+docker-compose scale audit-worker=2
+
+# Check worker status
+docker-compose ps | grep worker
+```
+
+### Graceful Shutdown
+
+```bash
+# Stop accepting new messages
+docker-compose stop crawler-worker
+
+# Wait for current jobs to complete
+docker logs xhs-audit-crawler-worker --since 1h | grep "completed"
+
+# Restart
+docker-compose start crawler-worker
+```
+
+### Consumer Group Management
+
+```bash
+# Create new consumer group
+docker exec xhs-audit-redis redis-cli XGROUP CREATE xhs:stream:crawl new-workers $ MKSTREAM
+
+# Remove stale consumers
+docker exec xhs-audit-redis redis-cli XGROUP DELCONSUMER xhs:stream:crawl crawl-workers stale-consumer
+```
 
 ---
 
@@ -365,10 +484,24 @@ curl http://localhost:8080/actuator/health
 docker-compose stop crawler-worker-1
 
 # 2. Wait for current jobs to complete
-docker logs xhs-audit-crawler-1 --since 1h | grep "completed"
+docker logs xhs-audit-crawler-worker-1 --since 1h | grep "completed"
 
 # 3. Restart worker
 docker-compose start crawler-worker-1
+```
+
+### Emergency Stream Recovery
+
+```bash
+# 1. Identify failed messages
+docker exec xhs-audit-redis redis-cli XPENDING xhs:stream:crawl - + 100
+
+# 2. Move to dead letter queue
+docker exec xhs-audit-redis redis-cli XADD xhs:stream:dead-letter * \
+  job-id=$(docker exec xhs-audit-redis redis-cli XPENDING xhs:stream:crawl | jq -r '.[0]')
+
+# 3. Restart processing
+docker-compose restart crawler-worker
 ```
 
 ---
@@ -394,7 +527,53 @@ docker cp xhs-audit-api:/app/logs ./local-logs
 # Check network
 docker network ls
 docker network inspect xhs-audit-network
+
+# Check stream consumers
+docker exec xhs-audit-redis redis-cli XINFO CONSUMERS xhs:stream:crawl crawl-workers
 ```
+
+---
+
+## v4.0 Architecture Reference
+
+```
+┌──────────────┐     ┌─────────────────┐     ┌────────────────┐
+│ API提交任务   │────▶│ Redis Stream    │────▶│ CrawlerWorker  │
+│ /api/audit   │     │ xhs:stream:crawl│     │ (Selenium)     │
+└──────────────┘     └─────────────────┘     └───────┬────────┘
+                                                      │
+                                                      ▼
+                                              ┌────────────────┐
+                                              │ PostgreSQL     │
+                                              │ (save content) │
+                                              └───────┬────────┘
+                                                      │
+                                                      ▼
+                                              ┌────────────────┐
+                                              │ Redis Stream   │
+                                              │ xhs:stream:audit│
+                                              └───────┬────────┘
+                                                      │
+                                                      ▼
+                                              ┌────────────────┐
+                                              │ AuditWorker    │
+                                              │ (LLM Agent)    │
+                                              └───────┬────────┘
+                                                      │
+                                                      ▼
+                                              ┌────────────────┐
+                                              │ Query Result   │
+                                              │ /api/audit/... │
+                                              └────────────────┘
+```
+
+### Stream Configuration
+
+| Stream | Consumer Group | Purpose |
+|--------|---------------|---------|
+| `xhs:stream:crawl` | `crawl-workers` | URL crawling tasks |
+| `xhs:stream:audit` | `audit-workers` | LLM audit tasks |
+| `xhs:stream:dead-letter` | N/A | Failed message storage |
 
 ---
 
@@ -413,3 +592,4 @@ docker network inspect xhs-audit-network
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
 | 1.0 | 2025-02-04 | - | Initial runbook |
+| 2.0 | 2026-02-06 | - | Added v4.0 async worker procedures |

@@ -169,20 +169,25 @@ Create a `.env` file from the template:
 cp .env.example .env
 ```
 
-### LLM Configuration
+### Complete Environment Variables Reference
+
+#### OpenAI API Configuration (Required)
 
 ```bash
-# OpenAI API (required)
+# OpenAI API key for LLM calls
 OPENAI_API_KEY=sk-your-api-key
+
+# OpenAI base URL
 OPENAI_BASE_URL=https://api.openai.com/v1
-OPENAI_CHAT_MODEL=qwen/qwen3-4b
-OPENAI_VISION_MODEL=glm-4.6v-flash
+
+# Azure OpenAI (optional)
+# OPENAI_BASE_URL=https://your-resource.openai.azure.com/
+# OPENAI_API_VERSION=2023-05-15
 ```
 
-### Database Configuration
+#### Database Configuration (Optional - defaults match docker-compose)
 
 ```bash
-# PostgreSQL (defaults match docker-compose)
 POSTGRES_HOST=localhost
 POSTGRES_PORT=5432
 POSTGRES_DB=xhs_audit
@@ -190,16 +195,108 @@ POSTGRES_USER=postgres
 POSTGRES_PASSWORD=postgres
 ```
 
-### Redis Configuration
+#### Redis Configuration (Optional - defaults match docker-compose)
 
 ```bash
-# Redis (defaults match docker-compose)
 REDIS_HOST=localhost
 REDIS_PORT=6379
 REDIS_PASSWORD=
 ```
 
-### Worker Configuration
+#### Spring AI Model Configuration
+
+```bash
+# Model selection: gpt-4-turbo, gpt-4, gpt-3.5-turbo
+OPENAI_MODEL=gpt-4-turbo
+
+# Temperature (0-2): 0=deterministic, 2=creative
+OPENAI_TEMPERATURE=0.3
+
+# Max tokens
+OPENAI_MAX_TOKENS=2000
+```
+
+#### Application Configuration
+
+```bash
+# Server port
+SERVER_PORT=8080
+
+# Log level: DEBUG, INFO, WARN, ERROR
+LOG_LEVEL=INFO
+```
+
+#### Playwright Configuration
+
+```bash
+# Browser pool size
+PLAYWRIGHT_POOL_SIZE=3
+
+# Page load timeout (milliseconds)
+PLAYWRIGHT_TIMEOUT=10000
+```
+
+#### Cache Configuration
+
+```bash
+# Redis cache TTL (seconds)
+REDIS_CACHE_TTL=86400
+
+# Caffeine local cache max size
+CAFFEINE_MAX_SIZE=1000
+
+# Caffeine cache expire (minutes)
+CAFFEINE_EXPIRE_MINUTES=10
+```
+
+#### Audit Configuration
+
+```bash
+# Retry count
+CRAWLER_MAX_RETRY=3
+
+# Batch max concurrency
+BATCH_MAX_CONCURRENCY=10
+```
+
+#### Monitoring Configuration (Actuator)
+
+```bash
+# Enable Prometheus metrics
+MANAGEMENT_METRICS_EXPORT_PROMETHEUS_ENABLED=true
+
+# Expose endpoints
+MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE=health,info,metrics,prometheus
+```
+
+#### Development/Test Configuration
+
+```bash
+# Spring Profile: dev, test, prod
+SPRING_PROFILES_ACTIVE=dev
+
+# Enable SQL logging
+SHOW_SQL=false
+
+# Format SQL
+FORMAT_SQL=true
+```
+
+#### Security Configuration (Optional)
+
+```bash
+# JWT secret (if authentication enabled)
+# JWT_SECRET=your-secret-key
+```
+
+#### Third-party Services (Optional)
+
+```bash
+# Sentry error tracking
+# SENTRY_DSN=https://your-sentry-dsn
+```
+
+#### Worker Configuration (v4.0 Async)
 
 ```bash
 # Worker mode: api / crawler-worker / audit-worker / both
@@ -214,24 +311,75 @@ CRAWLER_WORKER_ENABLED=true
 
 ## Makefile Commands Reference
 
+### Environment Management
+
 | Command | Description |
 |---------|-------------|
-| `make help` | Show all available commands |
+| `make check-env` | Check environment and dependencies |
 | `make setup` | Complete one-time environment setup |
-| `make docker-up` | Start PostgreSQL + Redis |
+
+### Docker Management
+
+| Command | Description |
+|---------|-------------|
+| `make docker-up` | Start PostgreSQL and Redis containers |
 | `make docker-down` | Stop Docker containers |
+| `make docker-logs` | View Docker logs |
+
+### Build and Compile
+
+| Command | Description |
+|---------|-------------|
+| `make clean` | Clean build artifacts |
 | `make compile` | Compile the project |
-| `make build` | Full build with tests |
+| `make build` | Full build (clean + compile + package) |
 | `make build-skip-test` | Quick build without tests |
+
+### Testing
+
+| Command | Description |
+|---------|-------------|
 | `make test` | Run all unit tests |
+| `make test-watch` | Watch for file changes and run tests |
 | `make test-coverage` | Generate coverage report |
-| `make test-specific TEST=ClassName` | Run specific test |
-| `make run` | Start the application |
-| `make debug` | Start in debug mode |
+| `make test-specific` | Run specific test (TEST=ClassName) |
+
+### Running Application
+
+| Command | Description |
+|---------|-------------|
+| `make run` | Run the application |
+| `make debug` | Run in debug mode |
+
+### Database
+
+| Command | Description |
+|---------|-------------|
 | `make db-psql` | Connect to PostgreSQL CLI |
 | `make db-redis` | Connect to Redis CLI |
+| `make db-flush` | Flush all databases |
+
+### Logs and Monitoring
+
+| Command | Description |
+|---------|-------------|
 | `make logs` | View application logs |
-| `make dev` | Start development environment |
+| `make logs-docker` | View Docker logs |
+
+### Miscellaneous
+
+| Command | Description |
+|---------|-------------|
+| `make format` | Format code |
+| `make lint` | Run code checks |
+
+### Convenience Commands
+
+| Command | Description |
+|---------|-------------|
+| `make fresh-start` | Complete restart (clean + docker-down + setup) |
+| `make full-test` | Complete test flow (compile + test + coverage) |
+| `make dev` | Start development environment (docker-up + compile) |
 
 ---
 
@@ -244,7 +392,7 @@ xhs_audit/
 │   ├── controller/       # REST API endpoints
 │   ├── service/          # Business logic
 │   ├── agent/           # LLM-powered AI agents
-│   ├── worker/          # Async message consumers
+│   ├── worker/          # Async message consumers (v4.0)
 │   ├── infrastructure/  # Resource management
 │   ├── repository/      # Data access layer
 │   ├── model/
@@ -327,6 +475,8 @@ docker exec xhs-audit-postgres psql -U postgres -d xhs_audit \
 | `audit_job` | Job tracking and status |
 | `xhs_content` | Crawled content data |
 | `audit_result` | Audit results |
+| `audit_rule` | Audit rules |
+| `sensitive_word` | Sensitive word dictionary |
 
 ### Database Commands
 

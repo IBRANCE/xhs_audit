@@ -1,4 +1,4 @@
-.PHONY: help setup docker-up docker-down clean build compile test test-watch run debug logs check-env
+.PHONY: help setup docker-up docker-down docker-logs docker-selenium-up docker-selenium-down clean build compile test test-watch run debug logs check-env health stream-stats stream-pending selenium-status dead-letter
 
 # 颜色定义
 BLUE=\033[0;34m
@@ -21,6 +21,8 @@ help: ## 显示帮助信息
 	@echo "  make docker-up        - 启动 Docker 容器"
 	@echo "  make docker-down      - 停止 Docker 容器"
 	@echo "  make docker-logs      - 查看 Docker 日志"
+	@echo "  make docker-selenium-up   - 启动 Selenium Grid"
+	@echo "  make docker-selenium-down - 停止 Selenium Grid"
 	@echo ""
 	@echo "$(YELLOW)构建和编译:$(NC)"
 	@echo "  make clean            - 清理构建文件"
@@ -30,7 +32,6 @@ help: ## 显示帮助信息
 	@echo ""
 	@echo "$(YELLOW)测试:$(NC)"
 	@echo "  make test             - 运行所有单元测试"
-	@echo "  make test-watch       - 监听文件变化并运行测试"
 	@echo "  make test-coverage    - 生成覆盖率报告"
 	@echo "  make test-specific    - 运行特定测试 (TEST=ClassName)"
 	@echo ""
@@ -43,14 +44,16 @@ help: ## 显示帮助信息
 	@echo "  make db-redis         - 连接 Redis"
 	@echo "  make db-flush         - 清空所有数据库"
 	@echo ""
+	@echo "$(YELLOW)v4.0 Stream 监控:$(NC)"
+	@echo "  make health           - 综合健康检查"
+	@echo "  make stream-stats     - Redis Stream 统计"
+	@echo "  make stream-pending   - Pending 消息统计"
+	@echo "  make dead-letter     - 查看死信队列"
+	@echo "  make selenium-status  - Selenium Grid 状态"
+	@echo ""
 	@echo "$(YELLOW)日志和监控:$(NC)"
 	@echo "  make logs             - 查看应用日志"
 	@echo "  make logs-docker      - 查看 Docker 日志"
-	@echo ""
-	@echo "$(YELLOW)杂项:$(NC)"
-	@echo "  make format           - 代码格式化"
-	@echo "  make lint             - 代码检查"
-	@echo ""
 
 check-env: ## 检查环境和依赖
 	@echo "$(BLUE)检查环境...$(NC)"
@@ -72,7 +75,7 @@ setup: ## 完整的一次性设置
 # Docker 管理
 docker-up: ## 启动 PostgreSQL 和 Redis 容器
 	@echo "$(BLUE)启动 Docker 容器...$(NC)"
-	@docker-compose up -d
+	@docker compose up -d
 	@sleep 5
 	@echo "$(GREEN)✓ 容器已启动$(NC)"
 	@echo "  PostgreSQL: localhost:5432"
@@ -82,11 +85,24 @@ docker-up: ## 启动 PostgreSQL 和 Redis 容器
 
 docker-down: ## 停止 Docker 容器
 	@echo "$(BLUE)停止 Docker 容器...$(NC)"
-	@docker-compose down
+	@docker compose down
 	@echo "$(GREEN)✓ 容器已停止$(NC)"
 
 docker-logs: ## 查看 Docker 日志
-	@docker-compose logs -f
+	@docker compose logs -f
+
+docker-selenium-up: ## 启动 Selenium Grid (4 Chrome + 8 Firefox)
+	@echo "$(BLUE)启动 Selenium Grid...$(NC)"
+	@docker compose -f docker-compose-selenium.yml up -d
+	@sleep 10
+	@echo "$(GREEN)✓ Selenium Grid 已启动$(NC)"
+	@echo "  Hub: http://localhost:4444"
+	@echo "  节点: 8 Firefox"
+
+docker-selenium-down: ## 停止 Selenium Grid
+	@echo "$(BLUE)停止 Selenium Grid...$(NC)"
+	@docker compose -f docker-compose-selenium.yml down
+	@echo "$(GREEN)✓ Selenium Grid 已停止$(NC)"
 
 # 构建和编译
 clean: ## 清理构建文件
@@ -116,14 +132,10 @@ test: ## 运行所有单元测试
 	@mvn test
 	@echo "$(GREEN)✓ 测试完成$(NC)"
 
-test-watch: ## 监听文件变化并运行测试
-	@echo "$(BLUE)启动测试监听...$(NC)"
-	@mvn clean test -Dtest=$(TEST) -DforkMode=never -Dorg.slf4j.simpleLogger.defaultLogLevel=info
-
 test-coverage: ## 生成覆盖率报告
 	@echo "$(BLUE)生成覆盖率报告...$(NC)"
 	@mvn clean test jacoco:report
-	@open target/site/jacoco/index.html
+	@open target/site/jacoco/index.html 2>/dev/null || echo "报告已生成: target/site/jacoco/index.html"
 	@echo "$(GREEN)✓ 报告已生成$(NC)"
 
 test-specific: ## 运行特定测试 (TEST=ClassName)
@@ -147,18 +159,18 @@ debug: ## 以调试模式运行
 # 数据库管理
 db-psql: ## 连接 PostgreSQL
 	@echo "$(BLUE)连接 PostgreSQL...$(NC)"
-	@docker-compose exec postgres psql -U postgres -d xhs_audit
+	@docker compose exec postgres psql -U postgres -d xhs_audit
 
 db-redis: ## 连接 Redis
 	@echo "$(BLUE)连接 Redis...$(NC)"
-	@docker-compose exec redis redis-cli
+	@docker compose exec redis redis-cli
 
 db-flush: ## 清空所有数据库
 	@echo "$(YELLOW)⚠ 警告: 这将清空所有数据库数据!$(NC)"
 	@read -p "确认? (yes/no) " confirm; \
 	if [ "$$confirm" = "yes" ]; then \
 		echo "清空 Redis..."; \
-		docker-compose exec redis redis-cli FLUSHALL; \
+		docker compose exec redis redis-cli FLUSHALL; \
 		echo "$(GREEN)✓ 完成$(NC)"; \
 	fi
 
@@ -167,16 +179,33 @@ logs: ## 查看应用日志
 	@tail -f target/spring.log 2>/dev/null || echo "日志文件不存在。应用可能未运行。"
 
 logs-docker: ## 查看 Docker 日志
-	@docker-compose logs -f
+	@docker compose logs -f
 
-# 杂项
-format: ## 代码格式化 (如已配置)
-	@echo "$(BLUE)格式化代码...$(NC)"
-	@mvn formatter:format 2>/dev/null || echo "$(YELLOW)格式化工具未配置$(NC)"
+# v4.0 Stream 监控
+health: ## 综合健康检查
+	@echo "$(BLUE)=== 健康检查 ===$(NC)"
+	@echo -n "Application: "; curl -s http://localhost:8080/actuator/health | jq -r '.status' 2>/dev/null || echo "N/A"
+	@echo -n "PostgreSQL: "; docker compose exec postgres pg_isready -U postgres -q && echo "UP" || echo "DOWN"
+	@echo -n "Redis: "; docker compose exec redis redis-cli ping -q && echo "UP" || echo "DOWN"
 
-lint: ## 代码检查 (如已配置)
-	@echo "$(BLUE)代码检查...$(NC)"
-	@mvn checkstyle:check 2>/dev/null || echo "$(YELLOW)检查工具未配置$(NC)"
+stream-stats: ## Redis Stream 统计
+	@echo "$(BLUE)=== Stream 统计 ===$(NC)"
+	@echo "Crawl Stream:   $$(docker compose exec redis redis-cli XLEN xhs:stream:crawl 2>/dev/null || echo 0) 条"
+	@echo "Audit Stream:   $$(docker compose exec redis redis-cli XLEN xhs:stream:audit 2>/dev/null || echo 0) 条"
+	@echo "Dead Letter:    $$(docker compose exec redis redis-cli XLEN xhs:stream:dead-letter 2>/dev/null || echo 0) 条"
+
+stream-pending: ## Pending 消息统计
+	@echo "$(BLUE)=== Pending 消息 ===$(NC)"
+	@echo "Crawl Pending:"; docker compose exec redis redis-cli XPENDING xhs:stream:crawl crawl-workers 2>/dev/null || echo "  N/A"
+	@echo "Audit Pending:"; docker compose exec redis redis-cli XPENDING xhs:stream:audit audit-workers 2>/dev/null || echo "  N/A"
+
+dead-letter: ## 查看死信队列
+	@echo "$(BLUE)=== Dead Letter Queue ===$(NC)"
+	@docker compose exec redis redis-cli XRANGE xhs:stream:dead-letter - + COUNT 5 2>/dev/null || echo "空或错误"
+
+selenium-status: ## Selenium Grid 状态
+	@echo "$(BLUE)=== Selenium Grid 状态 ===$(NC)"
+	@curl -s http://localhost:4444/status 2>/dev/null | jq -c '.ready, {nodes: (.nodes | length)}' 2>/dev/null || echo "Selenium Grid 未运行"
 
 # 快捷组合命令
 fresh-start: clean docker-down setup ## 完整的重新开始
