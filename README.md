@@ -64,60 +64,314 @@
 - ✅ [规划完成清单 (PLANNING_CHECKLIST.md)](./PLANNING_CHECKLIST.md) - 规划工作验收
 - 📈 [规划总结 (PLANNING_COMPLETION_SUMMARY.md)](./PLANNING_COMPLETION_SUMMARY.md) - 规划质量评估 (96.9%)
 
-## 快速开始
+## 🏗️ 物理架构
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           生产环境分布式部署架构                                │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+                              ┌─────────────────┐
+                              │    负载均衡      │
+                              │   (Nginx可选)   │
+                              │    :80/443      │
+                              └────────┬────────┘
+                                       │
+                              ┌────────▼────────┐
+                              │   API Server    │◄──── HTTP API 入口
+                              │  xhs-audit-api  │      任务创建/查询
+                              │  :8080          │
+                              └────────┬────────┘
+                                       │
+                    ┌──────────────────┼──────────────────┐
+                    │                  │                  │
+           ┌────────▼────────┐ ┌───────▼───────┐ ┌───────▼───────┐
+           │ CrawlerWorker-1 │ │ AuditWorker-1 │ │ CrawlerWorker-2│
+           │  :8080          │ │  :8080        │ │  :8080         │
+           │  爬虫节点       │ │  审核节点      │ │  爬虫节点      │
+           └────────┬────────┘ └───────┬───────┘ └────────┬────────┘
+                    │                  │                  │
+                    └──────────────────┼──────────────────┘
+                                       │
+    ┌──────────────────────────────────┼──────────────────────────────────┐
+    │                                  │                                  │
+┌───▼────────────┐          ┌────────▼────────┐          ┌────────▼────────────┐
+│   Redis        │          │  PostgreSQL      │          │  Selenium Grid     │
+│  :6379         │          │   :5432          │          │   :4444            │
+│                │          │                  │          │                    │
+│  • Stream队列  │          │  • audit_job     │          │  • Hub (调度中心)  │
+│    - crawl     │          │  • xhs_content   │          │  x x x x      │
+│    - audit     │          │  • audit_result  │          │  • Firefox ×8      │
+│  • 分布式锁    │          │  • audit_rule    │          │                    │
+│  • 布隆过滤器  │          │  • sensitive_word│          │                    │
+│  • 缓存        │          │                  │          │                    │
+└────────────────┘          └──────────────────┘          └─────────────────────┘
+    │
+    │                                  │
+    └──────────────────────────────────┘
+                                       │
+                                       ▼
+                              ┌─────────────────────────────────────┐
+                              │              AI 模型层               │
+                              └──────────────────┬──────────────────┘
+                                                 │
+                    ┌────────────────────────────┼────────────────────────────┐
+                    │                            │                            │
+           ┌────────▼────────┐          ┌────────▼────────┐          ┌────────▼────────┐
+           │   语言模型        │          │   图片识别模型   │          │   Function      │
+           │                  │          │                  │          │   Calling       │
+           │  • OpenAI GPT   │          │  • GLM-4.6v    │          │   规则引擎      │
+           │  • Qwen3-4b    │          │  • GPT-4o     │          │                  │
+           │  • 文本理解     │          │  • 图像审核     │          │  • 违规判定     │
+           │  • 语义分析     │          │  • OCR识别      │          │  • 风险分类     │
+           └─────────────────┘          └─────────────────┘          └─────────────────┘
+                    │                            │                            │
+                    └────────────────────────────┼────────────────────────────┘
+                                                 │
+                              ┌──────────────────┴──────────────────┐
+                              │              输出格式                 │
+                              │  • 违规判定 (isViolation)          │
+                              │  • 违规类别 (violations[])         │
+                              │  • 风险等级 (riskLevel)            │
+                              │  • 置信度 (confidence)              │
+                              │  • 详细说明 (explanation)          │
+                              └─────────────────────────────────────┘
+
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           开发环境 All-in-One 部署                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+                              ┌─────────────────┐
+                              │  xhs-audit-app  │
+                              │  :8080          │
+                              │                 │
+                              │  • API Server  │────► HTTP API
+                              │  • CrawlerWorker│
+                              │  • AuditWorker │
+                              └────────┬────────┘
+                                       │
+              ┌───────────────────────┼───────────────────────┐
+              │                       │                       │
+     ┌────────▼────────┐     ┌────────▼────────┐     ┌────────▼────────┐
+     │   Redis         │     │  PostgreSQL     │     │  Selenium Grid  │
+     │  :6379          │     │   :5432        │     │   :4444         │
+     │  (消息队列+缓存) │     │  (主数据库)     │     │  (浏览器集群)   │
+     └─────────────────┘     └────────────────┘     └─────────────────┘
+                                       │
+                                       ▼
+                              ┌─────────────────────────────────────┐
+                              │              AI 模型层               │
+                              │  ┌─────────────┐  ┌─────────────┐  │
+                              │  │  语言模型    │  │ 图片识别模型 │  │
+                              │  │ Qwen3-4b   │  │ GLM-4.6v   │  │
+                              │  └─────────────┘  └─────────────┘  │
+                              └─────────────────────────────────────┘
+```
+
+### 组件说明
+
+| 组件 | 容器名 | 端口 | CPU | 内存 | 职责 |
+|------|--------|------|-----|------|------|
+| **应用层** |
+| API Server | xhs-audit-api | 8080 | 2核 | 2GB | HTTP API 入口、任务管理、结果查询 |
+| Crawler Worker | xhs-audit-crawler-* | 8080 | 2核 | 2GB | 内容爬取、页面解析、去重过滤 |
+| Audit Worker | xhs-audit-audit-* | 8080 | 2核 | 3GB | AI 审核、规则匹配、风险评估 |
+| **数据层** |
+| PostgreSQL | xhs-audit-postgres | 5432 | 2核 | 2GB | 主数据库、持久化存储、事务处理 |
+| Redis | xhs-audit-redis | 6379 | 1核 | 1GB | 缓存、消息队列、分布式锁 |
+| **爬虫层** |
+| Selenium Hub | selenium-hub | 4444 | 1核 | 1GB | 浏览器调度中心 |
+| Chrome Node | selenium-chrome-* | - | 1核 | 1GB | 页面渲染（默认4实例） |
+| Firefox Node | selenium-firefox-* | - | 1核 | 1GB | 页面渲染（默认8实例） |
+| **AI 模型层** |
+| 语言模型 | 外部API | - | - | - | 文本理解、语义分析、违规判定（Function Calling） |
+| 图片识别模型 | 外部API | - | - | - | 图像审核、OCR识别、敏感内容检测 |
+
+### 部署模式
+
+| 模式 | 适用场景 | 配置方式 |
+|------|---------|---------|
+| **All-in-One** | 开发调试、本地测试 | `WORKER_TYPE=both` |
+| **分离部署** | 小规模生产环境 | API + Crawler Worker + Audit Worker |
+| **分布式部署** | 大规模高并发 | 多节点 Worker + 负载均衡 |
+
+### 数据流
+
+```
+用户提交请求
+     │
+     ▼
+┌──────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│   API Server │────▶│ Redis Stream    │────▶│ CrawlerWorker   │
+│  (任务创建)  │     │ xhs:stream:crawl│     │  (爬取内容)     │
+└──────────────┘     └─────────────────┘     └────────┬────────┘
+                                                       │
+                                                       ▼
+                                              ┌─────────────────┐
+                                              │ Selenium Grid    │
+                                              │  (页面渲染)      │
+                                              │  • 截图         │
+                                              │  • DOM解析       │
+                                              └────────┬────────┘
+                                                       │
+                                                       ▼
+                                              ┌─────────────────┐
+                                              │ PostgreSQL      │
+                                              │ (保存内容+截图)  │
+                                              └────────┬────────┘
+                                                       │
+                                                       ▼
+                                              ┌─────────────────┐
+                                              │ Redis Stream    │
+                                              │ xhs:stream:audit│
+                                              └────────┬────────┘
+                                                       │
+                                                       ▼
+                                              ┌─────────────────┐
+                                              │ AuditWorker     │
+                                              │  (AI 审核)      │
+                                              └────────┬────────┘
+                                                       │
+                                    ┌──────────────────┼──────────────────┐
+                                    │                  │                  │
+                                   ▼                  ▼                  ▼
+                          ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
+                          │  语言模型    │    │ 图片识别模型 │    │ 规则引擎    │
+                          │  Qwen3-4b  │    │ GLM-4.6v   │    │ Function    │
+                          │  • 文本审核 │    │  • 图像审核 │    │  Calling   │
+                          │  • 语义分析 │    │  • OCR识别  │    │  • 违规判定 │
+                          └─────────────┘    └─────────────┘    │  • 风险分类 │
+                                    │                  │        └─────────────┘
+                                    └──────────────────┘                  │
+                                                       │                  │
+                                                       ▼                  │
+                                              ┌─────────────────────────────┐
+                                              │       审核结果输出           │
+                                              │  isViolation, violations[], │
+                                              │  riskLevel, confidence,     │
+                                              │  explanation               │
+                                              └────────┬────────────────────┘
+                                                       │
+                                                       ▼
+                                              ┌─────────────────┐
+                                              │ PostgreSQL      │
+                                              │ (保存结果)      │
+                                              └─────────────────┘
+```
+
+### 外部依赖服务
+
+| 服务类型 | 模型 | 用途 | 配置变量 |
+|---------|------|------|---------|
+| **语言模型** | `qwen/qwen3-4b` | 文本理解、语义分析、违规判定 | `OPENAI_CHAT_MODEL` |
+| **图片识别模型** | `glm-4.6v-flash` / `gpt-4o` | 图像审核、OCR识别、敏感内容检测 | `OPENAI_VISION_MODEL` |
+| **Function Calling** | 内置规则引擎 | 标准化审核输出格式 | - |
+
+> ⚠️ **注意**：LLM 服务为外部依赖，需要配置有效的 API Key 才能正常工作。
+
+**配置示例**：
+```bash
+OPENAI_API_KEY=sk-your-api-key
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_CHAT_MODEL=qwen/qwen3-4b          # 语言模型
+OPENAI_VISION_MODEL=glm-4.6v-flash       # 图片识别模型
+```
+
+## 🚀 快速开始
 
 ### 前置条件
 
-- JDK 21+
-- Maven 3.8+
-- Docker & Docker Compose
+| 工具 | 版本要求 | 说明 |
+|------|---------|------|
+| JDK | 21+ | 项目使用 Java 21 |
+| Maven | 3.8+ | 项目构建工具 |
+| Docker | 20.x+ | 容器化运行 |
+| Docker Compose | 2.x+ | 服务编排 |
 
-### 安装步骤
+### 环境要求
 
-1. **克隆项目**
-   ```bash
-   cd /Users/bruce/Workspace/code/xhs_audit
-   ```
+- **内存**：推荐 8GB+（Selenium Grid 需要约 4GB）
+- **磁盘**：推荐 50GB+（浏览器缓存 + 数据库）
+- **网络**：能访问小红书域名（xiaohongshu.com）
 
-2. **启动依赖服务**
-   ```bash
-   docker-compose up -d
-   ```
-   
-   服务列表：
-   - PostgreSQL：localhost:5432
-   - Redis：localhost:6379
-   - PgAdmin：http://localhost:5050
-   - Redis Commander：http://localhost:8081
+### 部署步骤
 
-3. **配置环境变量**
-   ```bash
-   # 创建 .env 文件
-   cat > .env << EOF
-   OPENAI_API_KEY=sk-your-api-key-here
-   OPENAI_BASE_URL=https://api.openai.com/v1
-   EOF
-   ```
+#### 方式一：Docker Compose（推荐用于开发）
 
-4. **构建项目**
-   ```bash
-   mvn clean install
-   ```
+```bash
+# 1. 克隆项目
+cd /Users/bruce/Workspace/code/xhs_audit
 
-5. **运行应用**
-   ```bash
-   mvn spring-boot:run
-   ```
-   
-   应用将在 http://localhost:8080 启动
+# 2. 配置环境变量
+cat > .env << EOF
+OPENAI_API_KEY=sk-your-api-key-here
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_CHAT_MODEL=qwen/qwen3-4b
+WORKER_TYPE=both
+EOF
 
-### 查看数据库和缓存
+# 3. 启动基础设施
+docker-compose up -d
 
-- **PgAdmin（PostgreSQL）**：http://localhost:5050
-  - 用户名：admin@admin.com
-  - 密码：admin
+# 4. 查看服务状态
+docker-compose ps
 
-- **Redis Commander**：http://localhost:8081
+# 5. 构建并运行应用
+mvn clean package -DskipTests
+java -jar target/xhs-audit-*.jar
+```
+
+#### 方式二：本地运行（开发调试）
+
+```bash
+# 1. 先启动 Docker 服务
+docker-compose up -d postgres redis selenium-hub
+
+# 2. 运行应用（使用本地配置）
+mvn spring-boot:run
+```
+
+#### 方式三：生产部署
+
+```bash
+# 1. 构建 Docker 镜像
+docker build -t xhs-audit:latest .
+
+# 2. 使用生产配置启动
+docker-compose -f docker-compose-production.yml up -d
+
+# 3. 验证健康状态
+curl http://localhost:8080/actuator/health
+```
+
+### 服务访问
+
+| 服务 | URL | 用途 |
+|------|-----|------|
+| 应用接口 | http://localhost:8080 | REST API 入口 |
+| Swagger UI | http://localhost:8080/swagger-ui.html | API 文档 |
+| Selenium Grid | http://localhost:4444 | 浏览器集群控制台 |
+| PgAdmin | http://localhost:5050 | PostgreSQL 管理界面 |
+| Redis Commander | http://localhost:8081 | Redis 管理界面 |
+
+### 验证部署
+
+```bash
+# 1. 检查应用健康
+curl -s http://localhost:8080/actuator/health | jq .
+
+# 2. 检查 Selenium Grid
+curl -s http://localhost:4444/status | jq '.ready'
+
+# 3. 提交测试任务
+curl -X POST http://localhost:8080/api/audit/async \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://www.xiaohongshu.com/explore/test", "forceRefresh": false}'
+
+# 4. 查询任务状态
+curl http://localhost:8080/api/audit/status/{jobId}
+```
 
 ## 项目结构
 

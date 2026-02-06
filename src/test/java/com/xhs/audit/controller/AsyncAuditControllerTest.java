@@ -28,6 +28,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.xhs.audit.exception.GlobalExceptionHandler;
 import com.xhs.audit.infrastructure.MessageQueueService;
 import com.xhs.audit.model.dto.CrawlTaskMessage;
 import com.xhs.audit.model.entity.AuditJob;
@@ -59,7 +60,10 @@ class AsyncAuditControllerTest {
 
     @BeforeEach
     void setUp() {
-        mockMvc = MockMvcBuilders.standaloneSetup(asyncAuditController).build();
+        // 添加 GlobalExceptionHandler 到 MockMvc 配置
+        mockMvc = MockMvcBuilders.standaloneSetup(asyncAuditController)
+                .setControllerAdvice(new GlobalExceptionHandler())
+                .build();
         objectMapper = new ObjectMapper();
     }
 
@@ -119,7 +123,8 @@ class AsyncAuditControllerTest {
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.code").value("SUBMIT_FAILED"));
+                .andExpect(jsonPath("$.status").value("error"))
+                .andExpect(jsonPath("$.message").exists());
     }
 
     @Test
