@@ -34,6 +34,10 @@
                     <span class="menu-icon">&#128203;</span>
                     <span class="menu-text">历史记录</span>
                 </button>
+                <button class="menu-item" data-tab="rule-config">
+                    <span class="menu-icon">&#9881;</span>
+                    <span class="menu-text">规则配置</span>
+                </button>
             </nav>
         </aside>
 
@@ -279,6 +283,68 @@
                             </select>
                         </div>
                         <button id="export-btn" class="btn btn-sm">导出全部</button>
+                    </div>
+                </div>
+
+                <!-- 规则配置 -->
+                <div id="rule-config-tab" class="tab-panel">
+                    <div class="config-card">
+                        <div class="config-card-header">
+                            <div>
+                                <h2>内容规则配置</h2>
+                                <p class="config-card-subtitle">调整基础审核阈值、必含标签以及禁用词</p>
+                            </div>
+                            <div class="config-meta">
+                                <div class="config-updated">
+                                    <span>最近更新时间</span>
+                                    <strong id="config-updated-at">--</strong>
+                                </div>
+                                <button type="button" id="config-refresh-btn"
+                                    class="btn btn-secondary btn-sm">刷新</button>
+                            </div>
+                        </div>
+
+                        <form id="rule-config-form" class="config-form">
+                            <div class="config-grid">
+                                <div class="config-group">
+                                    <label for="config-min-text">最小正文字数</label>
+                                    <input type="number" id="config-min-text" min="1" placeholder="例如：80">
+                                </div>
+                                <div class="config-group">
+                                    <label for="config-min-image">最小图片数量</label>
+                                    <input type="number" id="config-min-image" min="0" placeholder="例如：1">
+                                </div>
+                            </div>
+
+                            <div class="config-group">
+                                <label for="config-required-tags">必含标签</label>
+                                <textarea id="config-required-tags" class="tag-textarea" rows="4"
+                                    placeholder="每行一个标签或话题，例如：#新能源"></textarea>
+                                <p class="form-hint">内容必须至少包含以上任意标签；支持中英文逗号或换行分隔。</p>
+                            </div>
+
+                            <div class="config-group">
+                                <label for="config-car-models">车型/关键词白名单</label>
+                                <textarea id="config-car-models" class="tag-textarea" rows="4"
+                                    placeholder="每行一个车型或关键词，例如：特斯拉 Model 3"></textarea>
+                                <p class="form-hint">用于识别重点监控的车型或品牌关键词。</p>
+                            </div>
+
+                            <div class="config-group">
+                                <label for="config-excluded-tags">禁用标签</label>
+                                <textarea id="config-excluded-tags" class="tag-textarea" rows="4"
+                                    placeholder="每行一个标签或词语"></textarea>
+                                <p class="form-hint">命中以上标签的内容不会被当成必含标签或车型关键词，用于屏蔽噪声标签避免误判。</p>
+                            </div>
+
+                            <div class="config-actions">
+                                <button type="button" id="config-reset-btn" class="btn btn-secondary">恢复当前配置</button>
+                                <button type="submit" id="config-save-btn" class="btn btn-primary">
+                                    <span class="btn-text">保存配置</span>
+                                    <span class="loading-spinner hidden"></span>
+                                </button>
+                            </div>
+                        </form>
                     </div>
                 </div>
             </div>

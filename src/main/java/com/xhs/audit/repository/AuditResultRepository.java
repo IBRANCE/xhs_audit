@@ -20,11 +20,11 @@ import com.xhs.audit.model.entity.AuditResult;
  * <p>
  * 查询分类：
  * <ul>
- *   <li>单条查询：findByPostId, findFirstByPostIdOrderByAuditedAtDesc</li>
- *   <li>任务查询：findByJobId, countByJobIdAndAuditStatus</li>
- *   <li>状态查询：findByAuditStatus</li>
- *   <li>统计查询：getStatusStatsByJobId</li>
- *   <li>时间范围查询：findByAuditedAtBetween</li>
+ * <li>单条查询：findByPostId, findFirstByPostIdOrderByAuditedAtDesc</li>
+ * <li>任务查询：findByJobId, countByJobIdAndAuditStatus</li>
+ * <li>状态查询：findByAuditStatus</li>
+ * <li>统计查询：getStatusStatsByJobId</li>
+ * <li>时间范围查询：findByAuditedAtBetween</li>
  * </ul>
  *
  * @author XHS Audit System
@@ -109,4 +109,18 @@ public interface AuditResultRepository extends JpaRepository<AuditResult, Long> 
      * @return 审核结果列表
      */
     List<AuditResult> findByAuditedAtBetween(LocalDateTime start, LocalDateTime end);
+
+    /**
+     * 批量查询多个任务的统计数据（优化N+1查询）
+     * <p>
+     * 一次性查询多个任务的统计信息，避免循环查询导致的性能问题
+     *
+     * @param jobIds 任务ID列表
+     * @return 统计结果列表，格式：[jobId, auditStatus, count]
+     */
+    @Query("SELECT r.jobId, r.auditStatus, COUNT(r) " +
+            "FROM AuditResult r " +
+            "WHERE r.jobId IN :jobIds " +
+            "GROUP BY r.jobId, r.auditStatus")
+    List<Object[]> batchGetStatusStats(@Param("jobIds") List<String> jobIds);
 }

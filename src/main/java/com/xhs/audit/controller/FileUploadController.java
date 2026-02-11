@@ -4,7 +4,9 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
@@ -24,9 +26,11 @@ import org.springframework.web.multipart.MultipartFile;
 
 import com.xhs.audit.exception.BusinessException;
 import com.xhs.audit.model.dto.ApiResponse;
+import com.xhs.audit.model.dto.JobStatistics;
 import com.xhs.audit.model.entity.AuditJob;
 import com.xhs.audit.repository.AuditJobRepository;
 import com.xhs.audit.repository.AuditJobRepositoryCustom;
+import com.xhs.audit.repository.AuditResultRepository;
 import com.xhs.audit.service.ExcelAuditService;
 
 import io.swagger.v3.oas.annotations.Operation;
@@ -55,6 +59,9 @@ public class FileUploadController {
 
         @Autowired
         private AuditJobRepositoryCustom auditJobRepositoryCustom;
+
+        @Autowired
+        private AuditResultRepository auditResultRepository;
 
         /**
          * GET /api/v1/audit/jobs - 获取任务列表（分页、筛选）
@@ -90,19 +97,34 @@ public class FileUploadController {
                 Page<AuditJob> jobPage = auditJobRepositoryCustom.searchJobs(jobId, status, keyword, startDateTime,
                                 endDateTime, pageable);
 
+                // 批量查询所有任务的统计数据（避免N+1问题）
+                List<String> jobIds = jobPage.getContent().stream()
+                                .map(AuditJob::getJobId)
+                                .collect(Collectors.toList());
+
+                Map<String, JobStatistics> statsMap = batchQueryJobStatistics(jobIds);
+
                 // 转换为前端需要的格式（使用camelCase以匹配前端期望）
                 Page<Map<String, Object>> resultPage = jobPage.map(job -> {
                         Map<String, Object> map = new HashMap<>();
                         map.put("jobId", job.getJobId());
                         map.put("fileName", job.getFileName());
                         map.put("totalLinks", job.getTotalLinks());
-                        map.put("completedCount", job.getCompletedCount());
-                        map.put("passedCount", job.getSuccessCount());
-                        map.put("rejectedCount", job.getFailedCount());
+
+                        // 从批量查询结果获取统计数据
+                        JobStatistics stats = statsMap.getOrDefault(job.getJobId(), JobStatistics.builder()
+                                        .jobId(job.getJobId())
+                                        .completedCount(0)
+                                        .passedCount(0)
+                                        .rejectedCount(0)
+                                        .uncertainCount(0)
+                                        .build());
+
+                        map.put("completedCount", stats.getCompletedCount());
+                        map.put("passedCount", stats.getPassedCount());
+                        map.put("rejectedCount", stats.getActualRejectedCount());
                         map.put("status", job.getStatus());
-                        map.put("progressPercent", job.getTotalLinks() > 0
-                                        ? (job.getCompletedCount() * 100 / job.getTotalLinks())
-                                        : 0);
+                        map.put("progressPercent", stats.calculateProgressPercent(job.getTotalLinks()));
                         map.put("createdAt", job.getCreatedAt());
                         return map;
                 });
@@ -126,18 +148,26 @@ public class FileUploadController {
                 AuditJob job = auditJobRepository.findByJobId(jobId)
                                 .orElseThrow(() -> new BusinessException("ERR_JOB_NOT_FOUND", "任务不存在: " + jobId));
 
+                // 从 audit_result 表实时统计数据，确保数据一致性
+                Map<String, JobStatistics> statsMap = batchQueryJobStatistics(List.of(jobId));
+                JobStatistics stats = statsMap.getOrDefault(jobId, JobStatistics.builder()
+                                .jobId(jobId)
+                                .completedCount(0)
+                                .passedCount(0)
+                                .rejectedCount(0)
+                                .uncertainCount(0)
+                                .build());
+
                 // 构建任务信息（使用camelCase以匹配前端期望）
                 Map<String, Object> jobInfo = new HashMap<>();
                 jobInfo.put("jobId", job.getJobId());
                 jobInfo.put("fileName", job.getFileName());
                 jobInfo.put("totalLinks", job.getTotalLinks());
-                jobInfo.put("completedCount", job.getCompletedCount());
-                jobInfo.put("passedCount", job.getSuccessCount());
-                jobInfo.put("rejectedCount", job.getFailedCount());
+                jobInfo.put("completedCount", stats.getCompletedCount());
+                jobInfo.put("passedCount", stats.getPassedCount());
+                jobInfo.put("rejectedCount", stats.getActualRejectedCount());
                 jobInfo.put("status", job.getStatus());
-                jobInfo.put("progressPercent", job.getTotalLinks() > 0
-                                ? (job.getCompletedCount() * 100 / job.getTotalLinks())
-                                : 0);
+                jobInfo.put("progressPercent", stats.calculateProgressPercent(job.getTotalLinks()));
                 jobInfo.put("createdAt", job.getCreatedAt());
                 jobInfo.put("updatedAt", job.getUpdatedAt());
 
@@ -236,5 +266,67 @@ public class FileUploadController {
                 return ResponseEntity.ok()
                                 .headers(headers)
                                 .body(templateBytes);
+        }
+
+        /**
+         * 批量查询任务统计数据
+         * <p>
+         * 使用单次SQL查询获取多个任务的统计信息，避免N+1问题
+         *
+         * @param jobIds 任务ID列表
+         * @return 任务ID到统计数据的映射
+         */
+        private Map<String, JobStatistics> batchQueryJobStatistics(List<String> jobIds) {
+                if (jobIds == null || jobIds.isEmpty()) {
+                        return new HashMap<>();
+                }
+
+                // 批量查询：一次SQL查询获取所有任务的统计数据
+                List<Object[]> rawStats = auditResultRepository.batchGetStatusStats(jobIds);
+
+                // 按jobId分组构建统计数据
+                Map<String, Map<String, Integer>> statsMap = new HashMap<>();
+
+                for (Object[] row : rawStats) {
+                        String currentJobId = (String) row[0];
+                        String auditStatus = (String) row[1];
+                        Long count = (Long) row[2];
+
+                        statsMap.computeIfAbsent(currentJobId, k -> new HashMap<>())
+                                        .put(auditStatus, count.intValue());
+                }
+
+                // 构建最终结果
+                Map<String, JobStatistics> result = new HashMap<>();
+                for (Map.Entry<String, Map<String, Integer>> entry : statsMap.entrySet()) {
+                        String jid = entry.getKey();
+                        Map<String, Integer> counts = entry.getValue();
+
+                        int passedCount = counts.getOrDefault("PASSED", 0);
+                        int rejectedCount = counts.getOrDefault("REJECTED", 0);
+                        int uncertainCount = counts.getOrDefault("UNCERTAIN", 0);
+                        int completedCount = passedCount + rejectedCount + uncertainCount;
+
+                        result.put(jid, JobStatistics.builder()
+                                        .jobId(jid)
+                                        .completedCount(completedCount)
+                                        .passedCount(passedCount)
+                                        .rejectedCount(rejectedCount)
+                                        .uncertainCount(uncertainCount)
+                                        .build());
+                }
+
+                // 为没有统计数据的任务填充默认值
+                for (String jid : jobIds) {
+                        result.putIfAbsent(jid, JobStatistics.builder()
+                                        .jobId(jid)
+                                        .completedCount(0)
+                                        .passedCount(0)
+                                        .rejectedCount(0)
+                                        .uncertainCount(0)
+                                        .build());
+                }
+
+                return result;
         }
 }

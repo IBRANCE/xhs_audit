@@ -18,7 +18,11 @@
         jobTotalPages: 0,
         currentJobDetail: null,
         currentJobId: null,
-        currentDetail: null
+        currentDetail: null,
+        ruleConfig: null,
+        ruleConfigLoaded: false,
+        ruleConfigLoading: false,
+        ruleConfigSaving: false
     };
 
     // DOM Elements
@@ -90,6 +94,18 @@
         // Modal
         imageModal: document.getElementById('image-modal'),
         modalImage: document.getElementById('modal-image'),
+
+        // Rule Config
+        ruleConfigForm: document.getElementById('rule-config-form'),
+        configMinText: document.getElementById('config-min-text'),
+        configMinImage: document.getElementById('config-min-image'),
+        configRequiredTags: document.getElementById('config-required-tags'),
+        configCarModels: document.getElementById('config-car-models'),
+        configExcludedTags: document.getElementById('config-excluded-tags'),
+        configUpdatedAt: document.getElementById('config-updated-at'),
+        configRefreshBtn: document.getElementById('config-refresh-btn'),
+        configSaveBtn: document.getElementById('config-save-btn'),
+        configResetBtn: document.getElementById('config-reset-btn'),
 
         // Toast
         toast: document.getElementById('toast')
@@ -231,6 +247,13 @@
                 hideDetail();
             }
         });
+
+        // Rule config
+        if (elements.ruleConfigForm) {
+            elements.ruleConfigForm.addEventListener('submit', handleRuleConfigSubmit);
+        }
+        elements.configRefreshBtn?.addEventListener('click', () => loadRuleConfig(true));
+        elements.configResetBtn?.addEventListener('click', restoreRuleConfigForm);
     }
 
     // Tab Switching
@@ -254,6 +277,10 @@
         // Load job list when switching to jobs tab
         if (tabName === 'jobs') {
             loadJobList();
+        }
+
+        if (tabName === 'rule-config' && !state.ruleConfigLoaded) {
+            loadRuleConfig();
         }
     }
 
@@ -728,6 +755,213 @@
         }, 500);
     }
 
+    // Rule Configuration
+    async function loadRuleConfig(showSuccessToast = false) {
+        if (!elements.ruleConfigForm || state.ruleConfigLoading) {
+            return;
+        }
+
+        state.ruleConfigLoading = true;
+        setRuleConfigInputsDisabled(true);
+        if (elements.configUpdatedAt) {
+            elements.configUpdatedAt.textContent = '加载中...';
+        }
+        if (elements.configRefreshBtn) {
+            elements.configRefreshBtn.disabled = true;
+            elements.configRefreshBtn.textContent = '刷新中...';
+        }
+
+        try {
+            const response = await fetch('/api/rules/config');
+            if (!response.ok) {
+                throw new Error(await parseErrorResponse(response));
+            }
+
+            const data = await response.json();
+            state.ruleConfig = data;
+            state.ruleConfigLoaded = true;
+            populateRuleConfigForm(data);
+            if (showSuccessToast) {
+                showToast('配置已刷新', 'success');
+            }
+        } catch (error) {
+            showToast(error.message || '加载配置失败，请稍后重试', 'error');
+            if (state.ruleConfig) {
+                populateRuleConfigForm(state.ruleConfig);
+            } else if (elements.configUpdatedAt) {
+                elements.configUpdatedAt.textContent = '--';
+            }
+        } finally {
+            state.ruleConfigLoading = false;
+            setRuleConfigInputsDisabled(false);
+            if (elements.configRefreshBtn) {
+                elements.configRefreshBtn.disabled = false;
+                elements.configRefreshBtn.textContent = '刷新';
+            }
+        }
+    }
+
+    function populateRuleConfigForm(config) {
+        if (!config || !elements.ruleConfigForm) {
+            return;
+        }
+
+        if (elements.configMinText) {
+            elements.configMinText.value = config.minTextLength ?? '';
+        }
+        if (elements.configMinImage) {
+            elements.configMinImage.value = config.minImageCount ?? '';
+        }
+        if (elements.configRequiredTags) {
+            elements.configRequiredTags.value = formatListForTextarea(config.requiredTags);
+        }
+        if (elements.configCarModels) {
+            elements.configCarModels.value = formatListForTextarea(config.carModelNames);
+        }
+        if (elements.configExcludedTags) {
+            elements.configExcludedTags.value = formatListForTextarea(config.excludedTags);
+        }
+        if (elements.configUpdatedAt) {
+            elements.configUpdatedAt.textContent = config.updatedAt ? formatDateTime(config.updatedAt) : '--';
+        }
+    }
+
+    function restoreRuleConfigForm() {
+        if (!state.ruleConfig) {
+            showToast('暂无可恢复的配置，请先加载。', 'warning');
+            return;
+        }
+        populateRuleConfigForm(state.ruleConfig);
+        showToast('已恢复为当前配置', 'info');
+    }
+
+    function buildRuleConfigPayload() {
+        if (!elements.ruleConfigForm) {
+            return null;
+        }
+
+        const minText = Number(elements.configMinText?.value || 0);
+        const minImage = Number(elements.configMinImage?.value || 0);
+        const requiredTags = parseMultiValueInput(elements.configRequiredTags?.value || '');
+        const carModels = parseMultiValueInput(elements.configCarModels?.value || '');
+        const excludedTags = parseMultiValueInput(elements.configExcludedTags?.value || '');
+
+        if (!Number.isFinite(minText) || minText < 1) {
+            showToast('最小正文字数需大于 0', 'warning');
+            return null;
+        }
+
+        if (!Number.isFinite(minImage) || minImage < 0) {
+            showToast('最小图片数量不能为负数', 'warning');
+            return null;
+        }
+
+        if (!requiredTags.length) {
+            showToast('请至少配置一个必含标签', 'warning');
+            return null;
+        }
+
+        if (!carModels.length) {
+            showToast('请至少配置一个车型/关键词', 'warning');
+            return null;
+        }
+
+        if (!excludedTags.length) {
+            showToast('请至少配置一个禁用标签', 'warning');
+            return null;
+        }
+
+        return {
+            minTextLength: minText,
+            minImageCount: minImage,
+            requiredTags,
+            carModelNames: carModels,
+            excludedTags
+        };
+    }
+
+    async function handleRuleConfigSubmit(event) {
+        event.preventDefault();
+
+        if (state.ruleConfigSaving) {
+            return;
+        }
+
+        const payload = buildRuleConfigPayload();
+        if (!payload) {
+            return;
+        }
+
+        state.ruleConfigSaving = true;
+        if (elements.configSaveBtn) {
+            setLoading(elements.configSaveBtn, true);
+        }
+
+        try {
+            const response = await fetch('/api/rules/config', {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(payload)
+            });
+
+            if (!response.ok) {
+                throw new Error(await parseErrorResponse(response));
+            }
+
+            const data = await response.json();
+            state.ruleConfig = data;
+            state.ruleConfigLoaded = true;
+            populateRuleConfigForm(data);
+            showToast('配置保存成功', 'success');
+        } catch (error) {
+            showToast(error.message || '保存失败，请稍后重试', 'error');
+        } finally {
+            state.ruleConfigSaving = false;
+            if (elements.configSaveBtn) {
+                setLoading(elements.configSaveBtn, false);
+            }
+        }
+    }
+
+    function setRuleConfigInputsDisabled(disabled) {
+        if (!elements.ruleConfigForm) {
+            return;
+        }
+
+        const fields = elements.ruleConfigForm.querySelectorAll('input, textarea');
+        fields.forEach(field => {
+            field.disabled = disabled;
+        });
+
+        if (elements.configResetBtn) {
+            elements.configResetBtn.disabled = disabled;
+        }
+
+        if (elements.configSaveBtn) {
+            if (disabled) {
+                elements.configSaveBtn.disabled = true;
+            } else if (!state.ruleConfigSaving) {
+                elements.configSaveBtn.disabled = false;
+            }
+        }
+    }
+
+    function parseMultiValueInput(text) {
+        return text
+            .split(/[\n,，]/)
+            .map(item => item.trim())
+            .filter(Boolean);
+    }
+
+    function formatListForTextarea(list) {
+        if (!Array.isArray(list) || list.length === 0) {
+            return '';
+        }
+        return list.join('\n');
+    }
+
     async function openJobDetail(jobId) {
         state.currentJobId = jobId;
 
@@ -1067,6 +1301,15 @@
             button.disabled = false;
             if (btnText) btnText.classList.remove('hidden');
             if (spinner) spinner.classList.add('hidden');
+        }
+    }
+
+    async function parseErrorResponse(response) {
+        try {
+            const data = await response.json();
+            return data.message || data.error || '请求失败';
+        } catch (error) {
+            return response.statusText || '请求失败';
         }
     }
 

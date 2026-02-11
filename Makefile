@@ -34,6 +34,7 @@ help: ## 显示帮助信息
 	@echo "  make test             - 运行所有单元测试"
 	@echo "  make test-coverage    - 生成覆盖率报告"
 	@echo "  make test-specific    - 运行特定测试 (TEST=ClassName)"
+	@echo "  make dev-test         - 启动本地 dev 环境测试 (start-local.sh)"
 	@echo ""
 	@echo "$(YELLOW)运行应用:$(NC)"
 	@echo "  make run              - 运行应用"
@@ -147,6 +148,11 @@ test-specific: ## 运行特定测试 (TEST=ClassName)
 	@mvn test -Dtest=$(TEST)
 	@echo "$(GREEN)✓ 完成$(NC)"
 
+dev-test: ## 运行本地 dev 环境测试 (start-local.sh)
+	@echo "$(BLUE)启动本地 dev 环境测试...$(NC)"
+	@./start-local.sh
+	@echo "$(GREEN)✓ dev 环境测试完成$(NC)"
+
 # 运行应用
 run: ## 运行应用
 	@echo "$(BLUE)启动应用...$(NC)"
@@ -166,9 +172,13 @@ db-redis: ## 连接 Redis
 	@docker compose exec redis redis-cli
 
 db-flush: ## 清空所有数据库
-	@echo "$(YELLOW)⚠ 警告: 这将清空所有数据库数据!$(NC)"
+	@echo "$(YELLOW)⚠ 警告: 这将清空所有数据库数据 (PostgreSQL + Redis)!$(NC)"
 	@read -p "确认? (yes/no) " confirm; \
 	if [ "$$confirm" = "yes" ]; then \
+		echo "清空 PostgreSQL 表数据..."; \
+		docker compose exec postgres psql -U postgres -d xhs_audit -c "\
+			TRUNCATE TABLE xhs_content, audit_result, audit_rule, sensitive_word, audit_job \
+			RESTART IDENTITY CASCADE;"; \
 		echo "清空 Redis..."; \
 		docker compose exec redis redis-cli FLUSHALL; \
 		echo "$(GREEN)✓ 完成$(NC)"; \

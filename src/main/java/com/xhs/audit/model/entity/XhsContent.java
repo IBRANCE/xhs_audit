@@ -29,11 +29,11 @@ import lombok.NoArgsConstructor;
  * <p>
  * 字段设计说明：
  * <ul>
- *   <li>核心内容：postId, url, title, content</li>
- *   <li>媒体信息：images, tags</li>
- *   <li>作者信息：authorId</li>
- *   <li>时间信息：publishedAt, crawledAt</li>
- *   <li>扩展信息：metadata(JSON格式)</li>
+ * <li>核心内容：postId, url, title, content</li>
+ * <li>媒体信息：images, tags</li>
+ * <li>作者信息：authorId</li>
+ * <li>时间信息：publishedAt, crawledAt</li>
+ * <li>扩展信息：metadata(JSON格式)</li>
  * </ul>
  *
  * @author XHS Audit System
@@ -117,12 +117,12 @@ public class XhsContent {
      * JSON对象格式，存储其他扩展信息
      * 可能的字段：
      * <ul>
-     *   <li>likedCount - 点赞数</li>
-     *   <li>collectedCount - 收藏数</li>
-     *   <li>commentCount - 评论数</li>
-     *   <li>shareCount - 分享数</li>
-     *   <li>authorName - 作者昵称</li>
-     *   <li>authorAvatar - 作者头像</li>
+     * <li>likedCount - 点赞数</li>
+     * <li>collectedCount - 收藏数</li>
+     * <li>commentCount - 评论数</li>
+     * <li>shareCount - 分享数</li>
+     * <li>authorName - 作者昵称</li>
+     * <li>authorAvatar - 作者头像</li>
      * </ul>
      */
     @JdbcTypeCode(SqlTypes.JSON)
@@ -164,6 +164,16 @@ public class XhsContent {
      */
     @Column(nullable = false)
     private LocalDateTime updatedAt = LocalDateTime.now();
+
+    /**
+     * 乐观锁版本号
+     * <p>
+     * JPA 自动管理，每次更新时自增
+     * 用于防止并发更新冲突
+     */
+    @jakarta.persistence.Version
+    @Column(nullable = false)
+    private Integer version = 0;
 
     /**
      * JPA实体更新前回调

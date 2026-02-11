@@ -65,13 +65,15 @@ audit:
   
   # LLM调用配置
   llm:
-    timeout-seconds: 60  # 审核可能需要更长时间
+    timeout-seconds: 60  # 已弃用，使用下面的独立配置
+    text-timeout-seconds: 90   # 文本审核超时（秒）
+    image-timeout-seconds: 120 # 图片审核超时（秒），视觉模型通常更慢
     max-retries: 3
     retry-delay-ms: 2000
   
   # Vision配置
   vision:
-    enabled: true
+    enabled: false  # 是否启用图片审核（可配置关闭以提升性能）
     provider: local-vision
     max-image-size: 20971520
     request-timeout: 60

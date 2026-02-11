@@ -39,7 +39,7 @@ public class AuditDecision {
      * 审核状态: PASSED / REJECTED / UNCERTAIN
      */
     @JsonProperty("audit_status")
-    @JsonAlias({"status"})
+    @JsonAlias({ "status" })
     private String status;
 
     /**
@@ -51,28 +51,28 @@ public class AuditDecision {
      * 置信度 (0-1)
      */
     @JsonProperty("confidence_score")
-    @JsonAlias({"confidenceScore"})
+    @JsonAlias({ "confidenceScore" })
     private Double confidenceScore;
 
     /**
      * 建议处理方式
      */
     @JsonProperty("suggested_action")
-    @JsonAlias({"suggestedAction"})
+    @JsonAlias({ "suggestedAction" })
     private String suggestedAction;
 
     /**
      * 风险等级: LOW / MEDIUM / HIGH / CRITICAL
      */
     @JsonProperty("risk_level")
-    @JsonAlias({"riskLevel"})
+    @JsonAlias({ "riskLevel" })
     private String riskLevel;
 
     /**
      * 使用的LLM模型名称
      */
     @JsonProperty("model_name")
-    @JsonAlias({"modelName"})
+    @JsonAlias({ "modelName" })
     private String modelName;
 
     /**
@@ -80,6 +80,23 @@ public class AuditDecision {
      */
     @JsonProperty("audited_time")
     private LocalDateTime auditedTime;
+
+    /**
+     * 审核状态枚举
+     */
+    public enum Status {
+        /** 通过审核 */
+        PASSED,
+        /** 驳回/拒绝 */
+        REJECTED,
+        /** 不确定，需要人工复核 */
+        UNCERTAIN;
+
+        @Override
+        public String toString() {
+            return name();
+        }
+    }
 
     /**
      * 驳回原因详情

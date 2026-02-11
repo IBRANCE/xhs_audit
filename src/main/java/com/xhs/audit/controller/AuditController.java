@@ -162,22 +162,32 @@ public class AuditController {
                         "ERR_JOB_NOT_FOUND",
                         "任务不存在: " + jobId));
 
+        // 从 audit_result 表实时统计数据，确保数据一致性
+        List<AuditResult> results = auditResultRepository.findByJobId(jobId);
+        long completedCount = results.size();
+        long passedCount = auditResultRepository.countByJobIdAndAuditStatus(jobId, "PASSED");
+        long rejectedCount = auditResultRepository.countByJobIdAndAuditStatus(jobId, "REJECTED");
+        long uncertainCount = auditResultRepository.countByJobIdAndAuditStatus(jobId, "UNCERTAIN");
+
+        // 实际驳回数包含 REJECTED 和 UNCERTAIN
+        long actualRejectedCount = rejectedCount + uncertainCount;
+
         // 计算进度
         int progressPercent = job.getTotalLinks() > 0
-                ? (job.getCompletedCount() * 100 / job.getTotalLinks())
+                ? (int) (completedCount * 100 / job.getTotalLinks())
                 : 0;
 
         JobStatusResponse response = JobStatusResponse.builder()
                 .jobId(job.getJobId())
                 .totalLinks(job.getTotalLinks())
-                .completedCount(job.getCompletedCount())
-                .passedCount(job.getSuccessCount())
-                .rejectedCount(job.getFailedCount())
+                .completedCount((int) completedCount)
+                .passedCount((int) passedCount)
+                .rejectedCount((int) actualRejectedCount)
                 .status(job.getStatus())
                 .progressPercent(progressPercent)
                 .createdTime(job.getCreatedAt())
                 .estimatedCompletionTime(null) // TODO: 计算预估时间
-                .errorCount(job.getFailedCount())
+                .errorCount((int) actualRejectedCount)
                 .errorSummary(new ArrayList<>())
                 .build();
 

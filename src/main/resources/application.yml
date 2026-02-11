@@ -159,7 +159,7 @@ audit:
   
   # Vision配置（可选）
   vision:
-    enabled: true
+    enabled: false  # v4.1: 是否启用图片审核（可配置关闭以提升性能）
     provider: local-vision
     max-image-size: 20971520  # 20MB
     request-timeout: 30
@@ -169,7 +169,9 @@ audit:
   
   # LLM调用配置
   llm:
-    timeout-seconds: 30
+    timeout-seconds: 60  # 已弃用，使用下面的独立配置
+    text-timeout-seconds: 90   # v4.1: 文本审核超时（秒）
+    image-timeout-seconds: 120 # v4.1: 图片审核超时（秒），视觉模型通常更慢
     max-retries: 3
     retry-delay-ms: 2000
   
@@ -178,47 +180,69 @@ audit:
     cache-ttl-minutes: 60
     sensitive-words-refresh-interval-hours: 24
 
+  # 基础规则配置默认值（可通过前端接口覆盖）
+  rule-validator:
+    min-text-length: 25
+    min-image-count: 1
+    required-tags:
+      - 东风日产
+      - 尽兴由NI
+    excluded-tags:
+      - 东风日产
+      - 尽兴由NI
+    car-model-names:
+      - 天籁
+      - 轩逸
+      - 逍客
+      - 奇骏
+      - X-TRAIL
+      - ARIYA
+      - 艾睿雅
+      - N7
+      - N6
+      - NX8
+      - 探陆
+      - NISSAN
+      - 启辰大V
+      - 启辰星
+      - 启辰D60
+      - 启辰
+      - Venucia
+      - QX50
+      - QX60
+      - Q50L
+      - 英菲尼迪
+      - INFINITI
+
   # 审核 Prompt 配置
   prompts:
     # 文本审核 System Prompt
     text-system: |
-      你是一个专业的小红书内容审核专家。你的职责是评估用户上传的东风日产品牌内容是否符合以下规则。
+      你是东风日产内容审核专家，负责审核小红书内容的**相关性和态度**。
+      
+      注意：基础规则（字数、图片、标签）已由系统预检，你只需判断以下2点：
 
       ============================================
-      【东风日产内容审核规则】
+      【审核要点】
       ============================================
-
-      【规则1：车型露出要求】
-      - 必须露出东风日产三品牌车型之一：日产(NISSAN)、启辰(Venucia)、英菲尼迪(INFINITI)
-      - 日产品牌车型：天籁、轩逸、逍客、奇骏、X-TRAIL、ARIYA艾睿雅、N7、探陆等
-      - 启辰品牌车型：启辰大V、启辰星、启辰D60等
-      - 英菲尼迪品牌车型：QX50、QX60、Q50L等
-      - 内容必须为车型相关的正向内容（UGC指用户原创内容）
-      - 负面内容、投诉、维权类内容不予通过
-
-      【规则2：笔记格式要求】
-      - 图文类：文字≥25字 且 图片≥1张
-      - 视频类：视频时长≥15秒
-
-      【规则3：话题标签要求】
-      - 必须带3个必选话题：#东风日产；#（车型名称，如 日产N7）；#尽兴由NI
-      - 可根据实际情况带更多热门标签
-
-      ============================================
-      【审核步骤】
-      ============================================
-      第1步：检查内容是否包含东风日产三品牌车型
-      第2步：检查笔记格式是否符合要求（字数、图片/视频）
-      第3步：检查话题标签是否包含3个必带话题
-      第4步：检查内容是否为正向内容（排除负面、投诉、维权）
-      第5步：综合判断，生成审核结果
+      
+      1. **内容相关性**（car_model）
+         - 内容是否真实涉及东风日产三品牌车型？
+         - 品牌：日产(NISSAN)、启辰(Venucia)、英菲尼迪(INFINITI)
+         - 常见车型：天籁、轩逸、逍客、奇骏、N7、N6、NX8、探陆、ARIYA、启辰大V、QX50等
+         - 警惕：仅提及品牌但无实质车型内容 → REJECTED
+      
+      2. **内容态度**（attitude）
+         - 必须为**正向**内容（用户分享、体验、推荐）
+         - 驳回：负面评价、投诉、维权、抱怨等 → REJECTED
+         - 边界case（如客观对比）→ UNCERTAIN，交由人工
 
       ============================================
       【决策标准】
       ============================================
-      - PASSED（通过）: 满足所有规则，置信度 >= 0.8
-      - REJECTED（驳回）: 任意一条规则不满足
-      - UNCERTAIN（不确定）: 置信度 < 0.7，或需要人工复核
+      - PASSED：内容相关且态度正向，置信度 ≥ 0.8
+      - REJECTED：内容不相关 或 态度负面
+      - UNCERTAIN：置信度 < 0.7 或 难以判断
 
       ============================================
       【输出格式】（严格JSON）
@@ -227,22 +251,22 @@ audit:
         "status": "PASSED|REJECTED|UNCERTAIN",
         "reasons": [
           {
-            "dimension": "car_model|content_type|tag|attitude",
-            "reason": "具体原因",
+            "dimension": "car_model|attitude",
+            "reason": "简短理由",
             "severity": "LOW|MEDIUM|HIGH|CRITICAL"
           }
         ],
         "confidenceScore": 0.95,
         "suggestedAction": "通过|驳回|人工复核",
         "riskLevel": "LOW|MEDIUM|HIGH|CRITICAL",
-        "modelName": "gpt-4-turbo"
+        "modelName": "qwen3-4b"
       }
 
-      【注意事项】
-      1. 严格按规则审核，不要凭空猜测
-      2. 必须检查3个必带话题是否齐全
-      3. 对于边界case，宁可标记UNCERTAIN交由人工
-      4. 严格按照JSON格式返回结果，不要添加额外说明
+      【示例】
+      ✅ 通过："分享我的天籁用车体验，油耗表现不错" → PASSED
+      ❌ 驳回："轩逸变速箱又出问题了，真是烦死了" → REJECTED (负面)
+      ❌ 驳回："今天路上看到一辆日产车" → REJECTED (无实质内容)
+      ⚠️ 不确定："对比了天籁和雅阁，各有优劣" → UNCERTAIN (需人工)
 
     # 图片审核 Prompt
     text-image: "请识别这张图片中是否有东风日产三品牌车型（日产NISSAN、启辰Venucia、英菲尼迪INFINITI），回复车型名称或'无'"
@@ -295,7 +319,7 @@ resilience4j:
       llmService:
         failure-rate-threshold: 50          # 失败率超过 50% 开路
         slow-call-rate-threshold: 80        # 慢调用超过 80% 开路
-        slow-call-duration-threshold: 30s   # 超过 30s 视为慢调用
+        slow-call-duration-threshold: 60s   # v4.1: 提高到 60s（匹配新的超时配置）
         wait-duration-in-open-state: 30s    # 开路后等待 30s
         permitted-number-of-calls-in-half-open-state: 5
         sliding-window-size: 10

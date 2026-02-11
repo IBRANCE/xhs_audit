@@ -99,6 +99,12 @@ public class CrawlerService {
     };
     private static final String[] TAG_SELECTORS = {
             "#hash-tag",
+            "[id*='hash']",
+            "[class*='hash']",
+            "[class*='topic']",
+            "a[href*='/search_result']",
+            "a[href*='keyword']",
+            ".tag",
             "[class*='tag']"
     };
     private static final String[] AUTHOR_SELECTORS = {
@@ -108,6 +114,15 @@ public class CrawlerService {
     private static final String[] PUBLISH_TIME_SELECTORS = {
             "#noteContainer > div.interaction-container > div.note-scroller > div.note-content > div.bottom-container > span.date",
             "[class*='time']"
+    };
+
+    /** 需要从正文中清理的无关文本 */
+    private static final String[] UNWANTED_CONTENT_TEXTS = {
+            "展开全文",
+            "收起",
+            "全文",
+            "展开",
+            "More"
     };
 
     /**
@@ -326,10 +341,32 @@ public class CrawlerService {
                 content.setImages(images);
             }
 
-            // 爬取Tag
-            List<String> tags = extractTagsWithFallback(driver, TAG_SELECTORS);
+            // 爬取Tag - 优先从正文中提取
+            List<String> tags = new ArrayList<>();
+            if (content.getContent() != null && !content.getContent().isEmpty()) {
+                // 首先从正文中提取#标签
+                tags = extractTagsFromContent(content.getContent());
+                log.info("从正文提取到{}个tag: {}", tags.size(), tags);
+            }
+
+            // 如果正文中没有标签，尝试从页面选择器提取
+            if (tags.isEmpty()) {
+                tags = extractTagsWithFallback(driver, TAG_SELECTORS);
+                log.info("从页面选择器提取到{}个tag: {}", tags.size(), tags);
+            }
+
             if (!tags.isEmpty()) {
                 content.setTags(tags);
+                log.info("成功提取{}个tag: {}", tags.size(), tags);
+
+                // 从正文中移除tag和无关文本
+                if (content.getContent() != null && !content.getContent().isEmpty()) {
+                    String cleanedContent = removeTagsFromContent(content.getContent(), tags);
+                    content.setContent(cleanedContent);
+                    log.info("正文清理完成，移除了{}个tag", tags.size());
+                }
+            } else {
+                log.warn("未能提取到任何tag，正文长度: {}", content.getContent() != null ? content.getContent().length() : 0);
             }
 
             // 提取元数据
@@ -487,6 +524,36 @@ public class CrawlerService {
     }
 
     /**
+     * 从正文中提取标签（#后面的内容）
+     * 例如："轩逸车不错啊 #东风日产#尽兴由NI#东风日产N7" -> ["东风日产", "尽兴由NI", "东风日产N7"]
+     */
+    private List<String> extractTagsFromContent(String content) {
+        List<String> tags = new ArrayList<>();
+        if (content == null || content.isEmpty()) {
+            return tags;
+        }
+
+        // 匹配#后面的内容，直到遇到下一个#、换行符、或结束
+        // 支持中文、英文、数字、下划线
+        Pattern pattern = Pattern.compile("#([^#\\n\\r]+)");
+        java.util.regex.Matcher matcher = pattern.matcher(content);
+
+        while (matcher.find()) {
+            String tag = matcher.group(1).trim();
+            if (!tag.isEmpty()) {
+                tags.add(tag);
+                log.info("从正文提取tag: {}", tag);
+            }
+        }
+
+        if (tags.isEmpty()) {
+            log.info("正文中未找到#标签，正文内容: {}", content.substring(0, Math.min(100, content.length())));
+        }
+
+        return tags;
+    }
+
+    /**
      * 提取Tag（精确优先，失败后回退）
      */
     private List<String> extractTagsWithFallback(WebDriver driver, String... selectors) {
@@ -503,29 +570,115 @@ public class CrawlerService {
     }
 
     /**
-     * 提取Tag
+     * 提取Tag - 使用JavaScript提取，支持多种获取方式
      */
     @SuppressWarnings("unchecked")
     private List<String> extractTagsBySelector(WebDriver driver, String selector) {
         List<String> tags = new ArrayList<>();
         try {
+            // 方式1: 使用JavaScript批量提取（更可靠）
             JavascriptExecutor js = (JavascriptExecutor) driver;
             Object result = js.executeScript(
-                    "return Array.from(document.querySelectorAll(arguments[0]))" +
-                            ".map(tag => tag.innerText).filter(Boolean)",
+                    "const elements = document.querySelectorAll(arguments[0]);" +
+                            "const tags = [];" +
+                            "elements.forEach(el => {" +
+                            "  const text = (el.innerText || el.textContent || el.getAttribute('aria-label') || '').trim();"
+                            +
+                            "  if (text && !text.includes('http')) {" + // 过滤掉链接
+                            "    tags.push(text.replace(/^[#\\s]+/, ''));" + // 移除开头的#和空格
+                            "  }" +
+                            "});" +
+                            "return tags;",
                     selector);
 
             if (result instanceof java.util.List) {
                 for (Object item : (java.util.List<?>) result) {
                     if (item != null) {
-                        tags.add(item.toString());
+                        String tag = item.toString().trim();
+                        if (!tag.isEmpty() && tag.length() < 50) { // 过滤过长的文本
+                            tags.add(tag);
+                            log.debug("JS提取tag成功: {}", tag);
+                        }
                     }
+                }
+            }
+
+            if (!tags.isEmpty()) {
+                log.info("Tag选择器 {} 通过JS匹配到 {} 个tag: {}", selector, tags.size(), tags);
+                return tags;
+            }
+
+            // 方式2: 回退到传统方式
+            List<WebElement> elements = driver.findElements(By.cssSelector(selector));
+            log.info("Tag选择器 {} 匹配到 {} 个元素", selector, elements.size());
+
+            for (WebElement element : elements) {
+                try {
+                    String text = element.getText().trim();
+                    if (text == null || text.isEmpty()) {
+                        // 尝试getAttribute
+                        text = element.getAttribute("innerText");
+                        if (text == null || text.isEmpty()) {
+                            text = element.getAttribute("textContent");
+                        }
+                        if (text == null || text.isEmpty()) {
+                            text = element.getAttribute("aria-label");
+                        }
+                    }
+
+                    if (text != null && !text.isEmpty()) {
+                        // 清理文本：移除#号和多余空格
+                        text = text.replaceAll("^[#\\s]+", "").trim();
+                        if (!text.isEmpty() && text.length() < 50 && !text.contains("http")) {
+                            tags.add(text);
+                            log.debug("成功提取tag: {}", text);
+                        }
+                    }
+                } catch (Exception e) {
+                    log.debug("Tag元素提取失败: {}", e.getMessage());
                 }
             }
         } catch (Exception e) {
             log.debug("Tag提取失败: {}", e.getMessage());
         }
         return tags;
+    }
+
+    /**
+     * 从正文中移除tag和无关文本
+     */
+    private String removeTagsFromContent(String content, List<String> tags) {
+        if (content == null || content.isEmpty()) {
+            return content;
+        }
+
+        String result = content;
+
+        // 1. 使用正则表达式一次性清理无关文本（性能优化）
+        if (UNWANTED_CONTENT_TEXTS.length > 0) {
+            String unwantedPattern = String.join("|",
+                    java.util.Arrays.stream(UNWANTED_CONTENT_TEXTS)
+                            .map(Pattern::quote)
+                            .toArray(String[]::new));
+            result = result.replaceAll(unwantedPattern, "");
+        }
+
+        // 2. 使用正则表达式直接移除所有 #tag 格式（包括可能的空格）
+        // 这样可以避免逐个移除时可能遗漏空格的问题
+        // 匹配 #后面跟非#、非换行的内容
+        result = result.replaceAll("#[^#\\n\\r]+", "");
+
+        // 3. 清理空白字符：
+        // - 移除行首行尾空格
+        // - 压缩连续空格为单个空格
+        // - 压缩3个以上连续换行为2个换行（保留段落结构）
+        result = result.replaceAll("[ \\t]+", " ") // 压缩空格和制表符
+                .replaceAll("(\\r?\\n){3,}", "\\n\\n") // 保留最多2个连续换行
+                .replaceAll("(?m)^[ \\t]+", "") // 移除行首空格
+                .replaceAll("(?m)[ \\t]+$", "") // 移除行尾空格
+                .trim();
+
+        return result;
     }
 
     /**
@@ -723,7 +876,49 @@ public class CrawlerService {
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     private void saveContent(XhsContent content) {
-        contentRepository.save(content);
+        // 检查数据库中是否已存在该 post_id 的记录
+        // 如果存在，获取其 id 并设置到 content 上，这样 JPA 会执行 UPDATE 而不是 INSERT
+        // 避免唯一约束冲突
+        if (content.getId() == null && content.getPostId() != null) {
+            Optional<XhsContent> existing = contentRepository.findByPostId(content.getPostId());
+            if (existing.isPresent()) {
+                XhsContent existingContent = existing.get();
+                log.debug("[爬虫服务-Selenium] post_id={} 已存在(id={}), 执行更新操作",
+                        content.getPostId(), existingContent.getId());
+
+                // 设置主键和版本号（让 JPA 执行 UPDATE）
+                content.setId(existingContent.getId());
+                content.setVersion(existingContent.getVersion());
+
+                // 保留原始的 createdAt，只更新 updatedAt
+                content.setCreatedAt(existingContent.getCreatedAt());
+                content.setUpdatedAt(LocalDateTime.now());
+            }
+        }
+
+        try {
+            contentRepository.save(content);
+            // JPA 会根据 id 是否为 null 自动判断：
+            // - id == null: 执行 INSERT
+            // - id != null: 执行 UPDATE (准确说是 MERGE，可能先 SELECT 再 UPDATE)
+        } catch (org.springframework.dao.DataIntegrityViolationException e) {
+            // 并发场景：另一个线程已经插入了相同的 post_id
+            // 重新查询并执行更新
+            log.warn("[爬虫服务-Selenium] 检测到并发插入冲突，尝试更新: post_id={}", content.getPostId());
+            Optional<XhsContent> existing = contentRepository.findByPostId(content.getPostId());
+            if (existing.isPresent()) {
+                XhsContent existingContent = existing.get();
+                content.setId(existingContent.getId());
+                content.setVersion(existingContent.getVersion());
+                content.setCreatedAt(existingContent.getCreatedAt());
+                content.setUpdatedAt(LocalDateTime.now());
+                contentRepository.save(content);
+                log.info("[爬虫服务-Selenium] 并发冲突已解决，更新成功: post_id={}", content.getPostId());
+            } else {
+                // 极端情况：记录被删除了
+                throw e;
+            }
+        }
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
